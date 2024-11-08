@@ -1,92 +1,103 @@
 import csv
 import datetime
 import gzip
-import importlib.resources
 import io
 import logging
-import os
 from dataclasses import dataclass
-from dataclasses import field
 from itertools import batched
 from pathlib import Path
-from typing import Generator
-from typing import TypeVar
 from zoneinfo import ZoneInfo
 
-import yaml
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import serialization
+from snowflake.connector import SnowflakeConnection
+from snowflake.connector import connect
+from snowflake.connector.errors import ProgrammingError
 
-import clients
-from clients import Env
-from extractload.clients import get_snowflake_connection
+from extractload.clients import get_parameters
+from extractload.clients import get_secret
 from extractload.clients import get_snowflake_staging_bucket
+from extractload.config import default_timestamp_format
+from extractload.config import default_timezone
+from extractload.wh_base import DbWarehouse
+from extractload.wh_base import TableType
+from extractload.tasks import Data
+from extractload.tasks import ExtractTable
 
 logger = logging.getLogger()
-logger.setLevel('INFO')
-S = TypeVar('S', bound='Serializable')
-B = TypeVar('B', bound='BaseTask')
-DictRow = dict[str, object]
-Data = Generator[DictRow, None, None] | list[DictRow]
 
-default_timestamp_format = '%Y-%m-%dT%H:%M:%S'
-default_timezone = 'Europe/Berlin'
 default_stage_suffix = '_stage'
 
 
-@dataclass
-class ExtractTable(DbTable):
-    extract_function: ExtractFunction | None = None
-
-    def register_extract_function(self, func: ExtractFunction):
-        self.extract_function = func
-
-    def create_clean_task(self) -> CleanTask:
-        return CleanTask(
-            database_name=self.database_name,
-            schema_name=self.schema_name,
-            table_name=self.table_name
-        )
-
-    def create_extract_tasks(self) -> list[ExtractTask]:
-        if self.options.look_back:
-            return [ExtractTaskLookBack(
-                database_name=self.database_name,
-                schema_name=self.schema_name,
-                table_name=self.table_name,
-                look_back=self.options.look_back,
-                timezone=self.options.timezone,
-            )]
-        elif self.options.batches > 1:
-            return [ExtractTaskBatched(
-                database_name=self.database_name,
-                schema_name=self.schema_name,
-                table_name=self.table_name,
-                batches=self.options.batches,
-                batch_number=batch_number,
-            ) for batch_number in range(self.options.batches)]
-        else:
-            return [ExtractTask(
-                database_name=self.database_name,
-                schema_name=self.schema_name,
-                table_name=self.table_name,
-            )]
-
-    def create_load_task(self) -> LoadTask:
-        return LoadTask(
-            database_name=self.database_name,
-            schema_name=self.schema_name,
-            table_name=self.table_name,
-        )
-
-    def create_extract_load_job(self) -> ExtractLoadJob:
-        return ExtractLoadJob(
-            clean=self.create_clean_task(),
-            extract=self.create_extract_tasks(),
-            load=self.create_load_task()
-        )
+def get_private_key_bytes(private_key_pem_string: str) -> bytes:
+    private_key = serialization.load_pem_private_key(
+        private_key_pem_string.encode(),
+        password=None,
+        backend=default_backend()
+    )
+    return private_key.private_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption()
+    )
 
 
-@dataclass
-class SnowflakeTable(BaseTable):
+def get_snowflake_connection(database: str) -> SnowflakeConnection:
+    snowflake_secret_arn = get_parameters()['SnowflakeSecretArn']
+    secret: dict = get_secret(snowflake_secret_arn)
+    conn_dict = {
+        key: value for key, value in secret.items()
+        if key in ('account', 'user', 'warehouse', 'role')
+    }
+    return connect(
+        **conn_dict,
+        private_key=get_private_key_bytes(
+            private_key_pem_string=secret['private_key']
+        ),
+        database=database
+    )
+
+
+class SnowflakeWarehouse(DbWarehouse):
+
+    def table_class(self, table_serialized: dict[str, dict | None]) -> type[TableType]:
+        if table_serialized.get('options', {}).get('primary_key') is None:
+            return SnowflakeUpdateTable
+        return SnowflakeUpsertTable
+
+    def create_tables(
+            self,
+            schema_names: set[str] | None = None,
+            table_names: set[str] | None = None,
+            overwrite: bool = False,
+            save_files: bool = False
+    ):
+        with get_snowflake_connection(self.database_name) as snowflake_conn:
+            with snowflake_conn.cursor() as snowflake_cursor:
+                for table in self.filter(schema_names, table_names):
+                    create_stmt = table.create_table_stmt()
+                    if save_files:
+                        file_path = Path('sql') / str(table.schema_name) / f'{table.table_name}.sql'
+                        with file_path.open('w', encoding='utf-8') as f:
+                            f.write(create_stmt)
+                    drop_stmt, create_stmt = create_stmt.split(';')
+                    if overwrite:
+                        snowflake_cursor.execute(drop_stmt)
+                        logger.info(f'Dropped {table.table_uri}.')
+                    try:
+                        snowflake_cursor.execute(create_stmt)
+                        logger.info(f'Created {table.table_uri}.')
+                    except ProgrammingError as e:
+                        if e.errno == 2002:
+                            logger.info(f'Table {table.table_uri} exists. Skipping.')
+                        else:
+                            raise
+
+
+class SnowflakeTable(ExtractTable):
+    @property
+    def load_stmt(self) -> str:
+        raise NotImplementedError
 
     def create_table_stmt(self) -> str:
         def f_comment(comment: str | None) -> str:
@@ -116,6 +127,18 @@ class SnowflakeTable(BaseTable):
         path = f's3://{bucket.name}/{prefix}'
         logger.info(f'Deleted {counter} file(s) from {path}')
 
+    def upload_to_stage(self, data: Data, chunk_size: int = 500_000):
+        total_rows = 0
+        bucket = get_snowflake_staging_bucket()
+        for file_number, rows in enumerate(batched(data, chunk_size)):
+            total_rows += len(rows)
+            file_name = f'file_{file_number:02d}'
+            key = f'{self.schema_name}/{self.table_name}/{file_name}.csv.gz'
+            body = gzip.compress(self.rows_dict_to_csv(rows).encode('utf-8'))
+            bucket.put_object(Body=body, Key=key)
+            logger.info(f'Uploaded {len(body)} bytes to s3://{bucket.name}/{key}')
+        logger.info(f'Uploaded {total_rows} rows to stage')
+
     def rows_dict_to_csv(self, rows_dict: tuple[dict[str, object], ...]) -> str:
         fieldnames = [column.name.strip('"') for column in self]
         utc_extract_ts = datetime.datetime.now(datetime.UTC).strftime(default_timestamp_format)
@@ -139,18 +162,6 @@ class SnowflakeTable(BaseTable):
                     print(row)
                     raise
             return csv_file.getvalue()
-
-    def upload_to_stage(self, data: Generator[dict[str, object], None, None], chunk_size: int = 500_000):
-        total_rows = 0
-        bucket = get_snowflake_staging_bucket()
-        for file_number, rows in enumerate(batched(data, chunk_size)):
-            total_rows += len(rows)
-            file_name = f'file_{file_number:02d}'
-            key = f'{self.schema_name}/{self.table_name}/{file_name}.csv.gz'
-            body = gzip.compress(self.rows_dict_to_csv(rows).encode('utf-8'))
-            bucket.put_object(Body=body, Key=key)
-            logger.info(f'Uploaded {len(body)} bytes to s3://{bucket.name}/{key}')
-        logger.info(f'Uploaded {total_rows} rows to stage')
 
     def update_load_date_stmt(self, suffix: str = '') -> str:
         if suffix not in ('', default_stage_suffix):
@@ -182,10 +193,6 @@ class SnowflakeTable(BaseTable):
             TRIM_SPACE = TRUE,
             FIELD_OPTIONALLY_ENCLOSED_BY = '"'
         )"""
-
-    @property
-    def load_stmt(self) -> str:
-        raise NotImplementedError
 
     def load_from_stage(self):
         """
@@ -250,82 +257,3 @@ class SnowflakeUpsertTable(SnowflakeTable):
             self.update_load_date_stmt(default_stage_suffix),
             self.delete_append_table_stmt(),
         ]).replace(8 * ' ', ' ')
-
-
-
-
-
-class DbWarehouse:
-    _instance = None
-
-    def __new__(cls, *args, **kwargs):
-        if cls._instance is None:
-            cls._instance = super(DbWarehouse, cls).__new__(cls)
-        return cls._instance
-
-    def __init__(self, env: Env = Env.dev):
-        if not hasattr(self, '_initialized'):
-            self.env = env
-            self.schemas = {}
-            self._initialized = True
-
-    def __repr__(self):
-        return f'DbWarehouse(env={self.env},schemas={self.schemas.__repr__()})'
-
-    def __iter__(self):
-        return iter(self.schemas.values())
-
-    def __getitem__(self, item):
-        if not isinstance(item, str):
-            raise TypeError(f'Expected str, got {type(item)}')
-        try:
-            return self.schemas[item]
-        except KeyError:
-            raise KeyError(f'No schema named {item}')
-
-    @property
-    def database_name(self) -> str:
-        return get_database_name(self.env)
-
-    def filter(
-            self,
-            schema_names: set[str] | list[str] | None = None,
-            table_names: set[str] | list[str] | None = None
-    ) -> list[SnowflakeTable]:
-        tables: list[SnowflakeTable] = []
-        for schema in self:
-            if schema_names is not None and schema.schema_name not in schema_names:
-                continue
-            tables.extend(schema.filter(table_names))
-        return tables
-
-
-
-    def create_tables(
-            self,
-            schema_names: set[str] | None = None,
-            table_names: set[str] | None = None,
-            overwrite: bool = False,
-            save_files: bool = False
-    ):
-        from snowflake.connector.errors import ProgrammingError
-
-        with get_snowflake_connection(get_database_name()) as snowflake_conn:
-            with snowflake_conn.cursor() as snowflake_cursor:
-                for table in self.filter(schema_names, table_names):
-                    if table.schema_name is None or table.table_name is None:
-                        raise ValueError('schema_name and table_name must be set')
-                    create_stmt = table.create_table_stmt()
-                    if save_files:
-                        file_path = Path('sql') / table.schema_name / f'{table.table_name}.sql'
-                        with file_path.open('w', encoding='utf-8') as f:
-                            f.write(create_stmt)
-                    drop_stmt, create_stmt = create_stmt.split(';')
-                    if overwrite:
-                        snowflake_cursor.execute(drop_stmt)
-                    try:
-                        snowflake_cursor.execute(create_stmt)
-                        logger.info(f'{table.table_uri}...')
-                    except ProgrammingError as e:
-                        if e.errno != 2002:
-                            raise

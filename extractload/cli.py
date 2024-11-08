@@ -9,14 +9,14 @@ import typer
 from rich import print
 from typer import Option
 
-import extractload.tables
+import extractload.wh_base
 from extractload.app import Action
 from extractload.app import ExtractLoadTask
 from extractload.app import ScheduleBaseTask
 from extractload.app import lambda_handler
 from extractload.clients import get_stepfunctions_client
 from extractload.config import aws_account_id
-from extractload.tables import DbWarehouse
+from extractload.wh_base import DbWarehouse
 
 cli = typer.Typer(
     pretty_exceptions_enable=False
@@ -35,12 +35,6 @@ class Modes(str, Enum):
     local = 'local'
 
 
-class Env(str, Enum):
-    """
-    Environment.
-    """
-    dev = 'dev'
-    prod = 'prod'
 
 
 @cli.command(name='clean')

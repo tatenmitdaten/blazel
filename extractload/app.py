@@ -1,4 +1,4 @@
-from tables import TaskFactory
+from tasks import TaskFactory
 
 
 def lambda_handler(event: dict, context):

@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "extractload"
+authors = [
+    { name = "Christian Schäfer", email = "christian.schaefer@tatenmitdaten.com" },
+]
+description = "Package for running extract load jobs on AWS Lambda"
+requires-python = ">=3.12"
+dynamic = ["version"]
+
+dependencies = [
+    "snowflake-connector-python",
+    "pyyaml",
+    "typer",
+    "boto3-stubs[s3,secretsmanager,lambda,stepfunctions]",
+]
+
+[tool.setuptools]
+packages = ["extractload"]
+
+[project.optional-dependencies]
+dev = [
+    "boto3",
+    "pytest",
+    "moto[s3]",
+    "types-PyYAML",
+    "mypy",
+    "flake8",
+]

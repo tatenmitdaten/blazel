@@ -4,11 +4,13 @@ from itertools import product
 import pytest
 
 from clients import Env
-from extractload.tables import DbWarehouse
-from extractload.tables import DbSchema
-from extractload.tables import ExtractLoadJob
-from extractload.tables import ScheduleTask
-from extractload.tables import SnowflakeTable
+from extractload.wh_base import DbWarehouse
+from extractload.wh_base import DbSchema
+from extractload.tasks import ExtractLoadJob
+from extractload.tasks import ScheduleTask
+from extractload.wh_snowflake import SnowflakeTable
+from wh_snowflake import SnowflakeWarehouse
+from tasks import ExtractFunction
 
 
 @pytest.fixture
@@ -80,15 +82,15 @@ def warehouse_yaml_file(warehouse_yaml, tmp_path_factory):
 
 
 def test_warehouse_env(warehouse_dict):
-    warehouse = DbWarehouse.from_dict({})
+    warehouse = DbWarehouse.from_serialized({})
     assert warehouse.database_name == 'sources_dev'
     warehouse.env = Env.prod
     assert warehouse.database_name == 'sources'
 
 
 def test_warehouse_from_dict(warehouse_dict):
-    warehouse = DbWarehouse.from_dict(warehouse_dict)
-    assert warehouse.as_dict == warehouse_dict
+    warehouse = DbWarehouse.from_serialized(warehouse_dict)
+    assert warehouse.serialized == warehouse_dict
 
 
 def test_warehouse_from_yaml(warehouse_yaml):
@@ -101,25 +103,6 @@ def test_warehouse_from_yaml_file(warehouse_yaml_file, warehouse_yaml):
     assert warehouse.as_yaml == warehouse_yaml
     warehouse = DbWarehouse.from_yaml_file(warehouse_yaml_file)  # uses explicit path
     assert warehouse.as_yaml == warehouse_yaml
-
-
-def test_singleton_warehouse(warehouse_dict):
-    # init warehouse1
-    warehouse1 = DbWarehouse()
-    schema = DbSchema(warehouse1, schema_name='schema1')
-    warehouse1.schemas['schema1'] = schema
-    schema.tables['table1'] = SnowflakeTable(schema=schema, table_name='table1')
-
-    # load warehouse2 from dict
-    warehouse2 = DbWarehouse.from_dict(warehouse_dict)
-    schema = warehouse1.schemas['schema1']
-
-    # assert that existing tables have not been changed
-    assert schema.tables['table1'].columns == {}
-    # assert that new tables have been added
-    assert 'table2' in schema.tables
-    # assert warehouse is a singleton
-    assert warehouse1 is warehouse2
 
 
 def test_filter(large_warehouse):
@@ -143,7 +126,7 @@ def test_filter_empty_args(large_warehouse):
     assert len(large_warehouse.filter(schema_names=['schema0'])) == 10
 
 
-def test_schedule(warehouse_yaml_file):
+def test_schedule(warehouse_yaml):
     schedule_task = ScheduleTask(
         database_name='sources',
         schema_names=['schema1'],
@@ -151,7 +134,9 @@ def test_schedule(warehouse_yaml_file):
     )
     data = schedule_task.as_dict
     assert schedule_task == ScheduleTask.from_dict(data)
-    el_job = ExtractLoadJob.from_dict(schedule_task.schedule[0])
+    warehouse = SnowflakeWarehouse.from_yaml(warehouse_yaml)
+    schedule = schedule_task(warehouse)
+    el_job = ExtractLoadJob.from_dict(schedule.as_dict['schedule'][0])
     assert el_job.clean.schema_name == 'schema1'
     assert el_job.clean.table_name == 'table1'
     assert el_job.load.schema_name == 'schema1'
@@ -159,10 +144,12 @@ def test_schedule(warehouse_yaml_file):
 
 
 def test_register(large_warehouse):
-    def test_func(limit: int = 0):
-        return 'test'
+    class TestExtractFunction(ExtractFunction):
+        def run(self):
+            print(self)
+            return 'test'
 
     table = large_warehouse['schema0']['table0']
-    table.register_extract_function(test_func)
+    table.register_extract_function(TestExtractFunction)
     task = table.create_extract_tasks()[0]
-    assert task() == 'test'
+    assert task(large_warehouse) == 'test'

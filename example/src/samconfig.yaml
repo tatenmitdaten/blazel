@@ -1,0 +1,37 @@
+version: 0.1
+
+default:
+  deploy:
+    parameters: &defaults
+      profile: sandbox
+      region: eu-central-1
+      capabilities: CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND
+      s3_bucket: sandbox-samclisourcebucket
+
+dev:
+  deploy:
+    parameters:
+      <<: *defaults
+      stack_name: transform-dev
+      s3_prefix: transform-dev
+      parameter_overrides:
+        - Environment=dev
+        - SnowflakeSecretArn=tbd
+        - KMSKeyArn=tbd
+        - DbtRepositoryName=sandbox-model
+        - DbtDocsBucketStem=sandbox-dbt-docs
+        - DbtDocsAccessToken=tbd
+
+prod:
+  deploy:
+    parameters:
+      <<: *defaults
+      stack_name: transform-prod
+      s3_prefix: transform-prod
+      parameter_overrides:
+        - Environment=prod
+        - SnowflakeSecretArn=tbd
+        - KMSKeyArn=tbd
+        - DbtRepositoryName=sandbox-model
+        - DbtDocsBucketStem=sandbox-dbt-docs
+        - DbtDocsAccessToken=tbd

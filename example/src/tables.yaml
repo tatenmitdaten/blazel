@@ -1,0 +1,19 @@
+schema1:
+  table1:
+    columns:
+      location_id:
+        dtype: int
+        definition: '"LocationId"'
+      source:
+        dtype: varchar
+        definition: '"Source"'
+  table2:
+    columns:
+      location_id: int
+      source: varchar
+
+schema2:
+  table1:
+    columns:
+      location_id: int
+      source: varchar
