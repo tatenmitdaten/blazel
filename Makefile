@@ -7,7 +7,7 @@ venv:
 	$(venv_path)/bin/python -m pip install --upgrade pip-tools pip setuptools
 
 install:
-	$(venv_path)/bin/python -m pip install -e .[dev]
+	$(venv_path)/bin/python -m pip install -e .[parquet,dev]
 
 setup: venv install
 
