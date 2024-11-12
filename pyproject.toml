@@ -33,3 +33,6 @@ dev = [
 parquet = [
     "pyarrow"
 ]
+
+[project.scripts]
+extractload = "extractload.cli:cli"

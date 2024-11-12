@@ -8,7 +8,6 @@ import typer
 from rich import print
 from typer import Option
 
-from extractload.app import lambda_handler
 from extractload.clients import get_stepfunctions_client
 from extractload.config import Env
 from extractload.warehouse.sf_csv import SnowflakeWarehouse
@@ -22,8 +21,6 @@ cli = typer.Typer(
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 logger.addHandler(logging.StreamHandler())
-
-aws_account_id = os.environ.get('AWS_ACCOUNT_ID')
 
 
 class Modes(str, Enum):
@@ -53,9 +50,7 @@ def cli_clean(
     """
     Clean S3 Snowflake stage.
     """
-    task = get_extract_load_job(schema, table, env).clean
-    response = lambda_handler(task.as_dict, None)
-    print(response)
+    get_extract_load_job(schema, table, env).clean()
 
 
 @cli.command(name='extract')
@@ -74,7 +69,7 @@ def cli_extract(
         task.start = start
     if end:
         task.end = end
-    response = lambda_handler(task.as_dict, None)
+    response = task
     print(response)
 
 
@@ -87,9 +82,7 @@ def cli_load(
     """
     Load data from stage to table in Snowflake.
     """
-    task = get_extract_load_job(schema, table, env).load
-    response = lambda_handler(task.as_dict, None)
-    print(response)
+    get_extract_load_job(schema, table, env).load()
 
 
 @cli.command(name='schedule')
@@ -97,9 +90,9 @@ def cli_schedule():
     """
     Print schedule for extract and load tasks to console for testing.
     """
-    task = ScheduleTask(database_name='sources')
-    response = lambda_handler(task.as_dict, None)
-    print(response)
+    warehouse = get_warehouse(Env.dev)
+    schedule = ScheduleTask(database_name='sources')(warehouse)
+    print(schedule.as_dict)
 
 
 @cli.command(name='run')
@@ -116,17 +109,18 @@ def cli_run(
     warehouse = get_warehouse(env)
     schedule_task = ScheduleTask(
         database_name=warehouse.database_name,
-        schema_names=schema or [],
-        table_names=table or [],
+        schema_names=schema,
+        table_names=table,
         limit=limit,
     )
     if mode == Modes.local:
         for job in schedule_task(warehouse).schedule:
-            lambda_handler(job.clean.as_dict, None)
+            job.clean()
             for task in job.extract:
-                lambda_handler(task.as_dict, None)
-            lambda_handler(job.load.as_dict, None)
+                task(warehouse)
+            job.load()
     else:
+        aws_account_id = os.environ.get('AWS_ACCOUNT_ID')
         extract_load_arn = f'arn:aws:states:eu-central-1:{aws_account_id}:stateMachine:ExtractLoadJobQueue-{env.value}'
         response_sf = get_stepfunctions_client().start_execution(
             stateMachineArn=extract_load_arn,

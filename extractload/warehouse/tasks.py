@@ -411,15 +411,17 @@ class Schedule(Serializable):
 class ScheduleTask(BaseTask):
     task_type: ClassVar[str] = field(default="ScheduleTask", init=False)
     database_name: str | None = None
-    schema_names: list[str] = field(default_factory=list)
-    table_names: list[str] = field(default_factory=list)
+    schema_names: list[str] | None = None
+    table_names: list[str] | None = None
     limit: int = 0
 
     def __post_init__(self):
         if self.database_name is None:
             raise ValueError('database_name is required')
-        self.schema_names = [schema_name.lower() for schema_name in self.schema_names]
-        self.table_names = [table_name.lower() for table_name in self.table_names]
+        if self.schema_names:
+            self.schema_names = [schema_name.lower() for schema_name in self.schema_names]
+        if self.table_names:
+            self.table_names = [table_name.lower() for table_name in self.table_names]
 
     def __call__(self, warehouse: DbWarehouse) -> Schedule:
 
