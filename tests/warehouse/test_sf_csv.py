@@ -1,0 +1,197 @@
+import gzip
+import logging
+import datetime
+
+import boto3
+import pytest
+from mypy_boto3_s3.service_resource import Bucket
+
+from warehouse.base import DbSchema
+from warehouse.sf_csv import SnowflakeTable
+from warehouse.sf_csv import SnowflakeTableOverwrite
+from warehouse.sf_csv import SnowflakeTableUpsert
+from warehouse.sf_csv import SnowflakeWarehouse
+from warehouse.tasks import Data
+from warehouse.tasks import ExtractLoadJob
+
+
+@pytest.fixture(scope='session')
+def schema() -> DbSchema:
+    columns = {
+        'column0': 'varchar',
+        'column1': 'datetime',
+    }
+    warehouse = SnowflakeWarehouse.from_serialized({
+        'schema0': {
+            'table0': {
+                'columns': columns,
+            },
+            'table_csv_overwrite': {
+                'columns': columns
+            },
+            'table_csv_upsert': {
+                'columns': columns,
+                'options': {
+                    'primary_key': 'column0',
+                }
+            },
+        }
+    })
+    schema = warehouse['schema0']
+    for table in schema:
+        setattr(table, 'get_now_timestamp', lambda: '2024-01-01 00:00:00')
+    yield schema
+
+
+@pytest.fixture(scope='session')
+def table0(schema) -> SnowflakeTable:
+    return schema['table0']
+
+
+def test_snowflake_table_classes(schema):
+    assert isinstance(schema['table_csv_overwrite'], SnowflakeTableOverwrite)
+    assert isinstance(schema['table_csv_upsert'], SnowflakeTableUpsert)
+
+
+def test_snowflake_load_stmt_csv_overwrite(schema):
+    assert schema['table_csv_overwrite'].load_stmt() == """\
+TRUNCATE TABLE IF EXISTS sources_dev.schema0.table_csv_overwrite;
+COPY INTO sources_dev.schema0.table_csv_overwrite (column0, column1)
+FROM @sources_dev.public.stage/schema0/table_csv_overwrite/
+FILE_FORMAT = (
+    TYPE = 'csv'
+    FIELD_DELIMITER = ';'
+    EMPTY_FIELD_AS_NULL = TRUE
+    SKIP_HEADER = 1
+    SKIP_BLANK_LINES = TRUE
+    TRIM_SPACE = TRUE,
+    FIELD_OPTIONALLY_ENCLOSED_BY = '"'
+);
+UPDATE sources_dev.schema0.table_csv_overwrite SET load_date='2024-01-01 00:00:00'"""
+
+
+def test_snowflake_load_stmt_table_csv_upsert(schema):
+    assert schema['table_csv_upsert'].load_stmt() == """\
+DROP TABLE IF EXISTS sources_dev.schema0.table_csv_upsert_stage;
+CREATE TABLE sources_dev.schema0.table_csv_upsert_stage LIKE sources_dev.schema0.table_csv_upsert;
+COPY INTO sources_dev.schema0.table_csv_upsert_stage (column0, column1)
+FROM @sources_dev.public.stage/schema0/table_csv_upsert/
+FILE_FORMAT = (
+    TYPE = 'csv'
+    FIELD_DELIMITER = ';'
+    EMPTY_FIELD_AS_NULL = TRUE
+    SKIP_HEADER = 1
+    SKIP_BLANK_LINES = TRUE
+    TRIM_SPACE = TRUE,
+    FIELD_OPTIONALLY_ENCLOSED_BY = '"'
+);
+UPDATE sources_dev.schema0.table_csv_upsert_stage SET load_date='2024-01-01 00:00:00';
+DELETE FROM sources_dev.schema0.table_csv_upsert WHERE column0 IN (SELECT column0 FROM sources_dev.schema0.table_csv_upsert_stage);
+INSERT INTO sources_dev.schema0.table_csv_upsert SELECT * FROM sources_dev.schema0.table_csv_upsert_stage"""
+
+
+def test_create_table_stmt(table0):
+    assert table0.create_table_stmt() == """\
+DROP TABLE IF EXISTS sources_dev.schema0.table0;
+
+CREATE TABLE sources_dev.schema0.table0 (
+    column0 VARCHAR,
+    column1 DATETIME,
+    load_date DATETIME
+)"""
+
+
+@pytest.fixture(scope='session')
+def snowflake_bucket(mocked_aws, parameters) -> Bucket:
+    s3 = boto3.client('s3', region_name='eu-central-1')
+    bucket_stem = parameters['SnowflakeStagingBucketStem']
+    bucket_name = f'{bucket_stem}-dev'
+    s3.create_bucket(Bucket=bucket_name, CreateBucketConfiguration={'LocationConstraint': 'eu-central-1'})
+    yield boto3.resource('s3').Bucket(bucket_name)
+
+
+def test_clean_stage(monkeypatch, caplog, snowflake_bucket, table0: SnowflakeTable, parameters):
+    snowflake_bucket.put_object(Key='schema0/table0/file', Body=b'test')
+    with caplog.at_level(logging.INFO):
+        table0.clean_stage()
+        assert caplog.text.strip().endswith('Deleted 1 file(s) from s3://snowflake-staging-bucket-dev/schema0/table0/')
+
+
+def test_get_key(table0):
+    assert table0.get_key(0) == 'schema0/table0/file_00.csv.gz'
+
+
+def test_rows_to_bytes(table0):
+    compressed = table0.rows_to_bytes((('a', 'b'), ('c', 'd')))
+    csv_str = gzip.decompress(compressed).decode('utf-8')
+    assert csv_str == """\
+column0;column1
+a;b
+c;d
+"""
+
+
+@pytest.fixture
+def data() -> Data:
+    return (
+        line for line in
+        [
+            {'column0': 'a', 'column1': 'b'},
+            {'column0': 'c', 'column1': 'd'},
+        ])
+
+
+def test_get_rows(table0, data):
+    rows = list(table0.get_rows(data))
+    assert rows == [('a', 'b'), ('c', 'd')]
+
+
+def test_upload_to_stage(caplog, snowflake_bucket, table0, data):
+    with caplog.at_level(logging.INFO):
+        table0.upload_to_stage(data, chunk_size=1)
+    line1, line2, line3 = caplog.text.strip().split('\n')
+    assert line1.endswith('Uploaded 36 bytes to s3://snowflake-staging-bucket-dev/schema0/table0/file_00.csv.gz')
+    assert line2.endswith('Uploaded 36 bytes to s3://snowflake-staging-bucket-dev/schema0/table0/file_01.csv.gz')
+    assert line3.endswith('Uploaded 2 rows to stage')
+
+
+@pytest.fixture(scope='session')
+def extract_time_table(mocked_aws, parameters):
+    dynamodb = boto3.client('dynamodb', region_name='eu-central-1')
+    table_stem = parameters['ExtractTimeTableStem']
+    table_name = f'{table_stem}-dev'
+    dynamodb.create_table(
+        TableName=table_name,
+        KeySchema=[
+            {
+                'AttributeName': 'table_uri',
+                'KeyType': 'HASH'
+            },
+        ],
+        AttributeDefinitions=[
+            {
+                'AttributeName': 'table_uri',
+                'AttributeType': 'S'
+            },
+        ],
+        BillingMode='PAY_PER_REQUEST',
+    )
+
+
+def test_extract_task_latest_timestamp(extract_time_table, parameters, table0):
+    latest_timestamp = '2024-01-01T00:00:00'
+    task = ExtractLoadJob.from_table(table0).extract[0]
+    assert task.start is None
+    table0.options.timestamp_field = 'column1'
+    table0.save_latest_timestamp(latest_timestamp)
+    task = ExtractLoadJob.from_table(table0).extract[0]
+    assert task.start == latest_timestamp
+
+
+def test_extract_task_lookback(monkeypatch, table0):
+    latest_timestamp = '2024-01-01T00:00:00'
+    now_timestamp = datetime.datetime.strptime('2024-01-02T00:00:00', '%Y-%m-%dT%H:%M:%S')
+    table0.options.look_back_days = 1
+    monkeypatch.setattr('warehouse.tasks.ExtractTask._get_now_timestamp', lambda self: now_timestamp)
+    task = ExtractLoadJob.from_table(table0).extract[0]
+    assert task.start == latest_timestamp

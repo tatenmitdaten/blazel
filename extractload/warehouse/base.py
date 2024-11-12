@@ -3,12 +3,14 @@ from dataclasses import dataclass
 from dataclasses import field
 from dataclasses import fields
 from pathlib import Path
-from typing import TypeVar
+from typing import cast
 from typing import dataclass_transform
+from typing import Generic
+from typing import TypeVar
 
 import yaml
 
-from config import Env
+from extractload.config import Env
 
 database_name_prod = os.environ.get('DATABASE_NAME_PROD', 'sources')
 database_name_dev = os.environ.get('DATABASE_NAME_DEV', 'sources_dev')
@@ -23,6 +25,10 @@ class DbColumn:
     definition: str | None = None
     source_name: str | None = None
     comment: str | None = None
+
+    def __post_init__(self):
+        self.name = self.name.lower()
+        self.dtype = self.dtype.lower()
 
     @property
     def as_dict(self) -> dict:
@@ -53,15 +59,13 @@ class DbColumn:
         )
 
 
+@dataclass_transform()
 @dataclass
-class DbTableOptions:
+class BaseOptions:
     batches: int = 1
-    ignore: bool = False
-    look_back: int | None = None
-    primary_key: str | None = None
-    source_name: str | None = None
+    look_back_days: int | None = None
+    timestamp_field: str | None = None
     timezone: str = 'Europe/Berlin'
-    where_clause: str | None = None
 
     @property
     def as_dict(self) -> dict[str, int | bool | str | None]:
@@ -71,6 +75,14 @@ class DbTableOptions:
             for f in fields(self)
             if getattr(self, f.name) != f.default
         }
+
+
+@dataclass
+class DbTableOptions(BaseOptions):
+    ignore: bool = False
+    file_format: str = 'csv'
+    primary_key: str | None = None
+    source_name: str | None = None
 
 
 @dataclass_transform()
@@ -97,6 +109,14 @@ class DbTable:
         return f'{self.database_name}.{self.schema_name}.{self.table_name}'
 
     @property
+    def base_options(self) -> BaseOptions:
+        options = BaseOptions()
+        # noinspection PyTypeChecker
+        for f in fields(options):
+            setattr(options, f.name, getattr(self.options, f.name))
+        return options
+
+    @property
     def serialized(self) -> dict:
         table = {'columns': {column.name: column.serialized for column in self}}
         if self.options.as_dict:
@@ -105,11 +125,10 @@ class DbTable:
 
     @classmethod
     def from_serialized(
-            cls,
+            cls: type[TableType],
             schema: 'DbSchema',
             table_name: str,
             table_serialized: dict[str, dict],
-
     ) -> TableType:
         table = cls(
             schema=schema,
@@ -126,7 +145,7 @@ class DbTable:
 
 
 @dataclass
-class DbSchema:
+class DbSchema(Generic[TableType]):
     warehouse: 'DbWarehouse'
     schema_name: str
     tables: dict[str, TableType] = field(default_factory=dict)
@@ -154,13 +173,14 @@ class DbSchema:
 
     @classmethod
     def from_serialized(
-            cls, warehouse: 'DbWarehouse',
+            cls,
+            warehouse: 'DbWarehouse',
             schema_name: str,
             schema_serialized: dict
     ) -> 'DbSchema':
         schema = cls(warehouse=warehouse, schema_name=schema_name)
         for table_name, table_serialized in schema_serialized.items():
-            table_class = warehouse.table_class(table_serialized)
+            table_class: type[TableType] = warehouse.table_class(table_serialized)
             schema.tables[table_name] = table_class.from_serialized(
                 schema,
                 table_name,
@@ -190,7 +210,7 @@ class DbWarehouse:
         return database_name_dev
 
     def table_class(self, table_serialized: dict[str, dict | None]) -> type[TableType]:
-        return DbTable
+        return cast(type[TableType], DbTable)
 
     def filter(
             self,
@@ -209,7 +229,7 @@ class DbWarehouse:
         return {schema.schema_name: schema.serialized for schema in self}
 
     @classmethod
-    def from_serialized(cls, warehouse_serialized: dict) -> 'DbWarehouse':
+    def from_serialized(cls, warehouse_serialized: dict):
         warehouse = cls()
         for schema_name, schema_serialized in warehouse_serialized.items():
             warehouse.schemas[schema_name] = DbSchema.from_serialized(
@@ -220,7 +240,7 @@ class DbWarehouse:
         return warehouse
 
     @classmethod
-    def from_yaml_file(cls, file: Path | str | None = None) -> 'DbWarehouse':
+    def from_yaml_file(cls, file: Path | str | None = None):
         file = file or os.environ.get('TABLES_YAML_PATH')
         if file is None:
             raise ValueError('No warehouse definition file provided')
@@ -233,7 +253,7 @@ class DbWarehouse:
         return cls.from_yaml(yaml_str)
 
     @classmethod
-    def from_yaml(cls, yaml_str: str) -> 'DbWarehouse':
+    def from_yaml(cls, yaml_str: str):
         return cls.from_serialized(yaml.safe_load(yaml_str))
 
     @property

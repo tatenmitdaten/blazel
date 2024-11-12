@@ -7,29 +7,31 @@ import uuid
 import zoneinfo
 from abc import ABC
 from abc import abstractmethod
-from dataclasses import MISSING
 from dataclasses import dataclass
 from dataclasses import field
 from dataclasses import fields
+from dataclasses import MISSING
 from typing import ClassVar
-from typing import Generator
-from typing import TypeVar
 from typing import dataclass_transform
+from typing import Generator
+from typing import Generic
+from typing import TypeVar
 
+from extractload.clients import get_extract_time_table
 from extractload.clients import get_job_table
 from extractload.clients import get_task_table
 from extractload.config import default_timestamp_format
-from extractload.config import default_timezone
-from extractload.wh_base import DbTable
-from extractload.wh_base import DbWarehouse
+from extractload.warehouse.base import BaseOptions
+from extractload.warehouse.base import DbTable
+from extractload.warehouse.base import DbWarehouse
 
 logger = logging.getLogger()
 
 SerializableType = TypeVar('SerializableType', bound='Serializable')
-BaseTaskType = TypeVar('BaseTaskType', bound='BaseTask')
 TableTaskType = TypeVar('TableTaskType', bound='TableTask')
+BaseTaskType = TypeVar('BaseTaskType', bound='BaseTask')
 ExtractTaskType = TypeVar('ExtractTaskType', bound='ExtractTask')
-ExtractFunctionType = TypeVar('ExtractFunctionType', bound='ExtractFunction')
+ExtractImplType = TypeVar('ExtractImplType', bound='ExtractImpl')
 DictRow = dict[str, object]
 Data = Generator[DictRow, None, None] | list[DictRow]
 
@@ -174,12 +176,20 @@ class ErrorTask(BaseTask):
 @dataclass
 class TableTask(BaseTask):
     task_type: ClassVar[str] = field(default="TableTask", init=False)
-    job_id: str
-    database_name: str
-    schema_name: str
-    table_name: str
+    job_id: str | None = None
+    database_name: str | None = None
+    schema_name: str | None = None
+    table_name: str | None = None
 
     def __post_init__(self):
+        if self.job_id is None:
+            raise ValueError('job_id is required')
+        if self.database_name is None:
+            raise ValueError('database_name is required')
+        if self.schema_name is None:
+            raise ValueError('schema_name is required')
+        if self.table_name is None:
+            raise ValueError('table_name is required')
         self.database_name = self.database_name.lower()
         self.schema_name = self.schema_name.lower()
         self.table_name = self.table_name.lower()
@@ -188,11 +198,11 @@ class TableTask(BaseTask):
     def table_uri(self) -> str:
         return f'{self.database_name}.{self.schema_name}.{self.table_name}'
 
-    def save(self):
+    def to_dynamodb(self):
         get_task_table().put_item(Item=self.as_dict)
 
     @classmethod
-    def load(cls, task_id) -> TableTaskType:
+    def from_dynamodb(cls: type[TableTaskType], task_id) -> TableTaskType:
         task_dict = get_task_table().get_item(Key={'task_id': task_id})
         return cls.from_dict(task_dict['Item'])
 
@@ -223,21 +233,29 @@ class LoadTask(TableTask):
 class ExtractTask(TableTask):
     task_type: ClassVar[str] = field(default="ExtractTask", init=False)
     task_number: int = 0
-    batches: int = 1
     limit: int = 0
-
-    def __call__(self, warehouse: DbWarehouse):
-        if warehouse[self.schema_name][self.table_name].extract_function is None:
-            raise NotImplementedError(f'No extract function registered for {self.table_uri}')
-        return warehouse[self.schema_name][self.table_name].extract_function.run(self)
-
-
-@dataclass
-class ExtractTaskTimeRange(ExtractTask):
-    task_type: ClassVar[str] = field(default="ExtractTaskTimeRange", init=False)
     start: str | None = None
     end: str | None = None
-    timezone: str = default_timezone
+    options: BaseOptions = field(default_factory=BaseOptions)
+
+    def __call__(self, warehouse: DbWarehouse):
+        if warehouse[self.schema_name][self.table_name].extract_impl is None:
+            raise NotImplementedError(f'No extract function registered for {self.table_uri}')
+        return warehouse[self.schema_name][self.table_name].extract_impl(self)
+
+    def __post_init__(self):
+        if self.start is None:
+            if self.options.timestamp_field:
+                extract_table = get_extract_time_table()
+                item = extract_table.get_item(Key={'table_uri': self.table_uri})
+                if 'Item' in item:
+                    self.start = str(item['Item'][self.options.timestamp_field])
+            if self.options.look_back_days:
+                interval = datetime.timedelta(days=self.options.look_back_days)
+                self.start = (self._get_now_timestamp() - interval).strftime(default_timestamp_format)
+
+    def _get_now_timestamp(self):
+        return datetime.datetime.now(tz=zoneinfo.ZoneInfo(self.options.timezone))
 
     @staticmethod
     def _parse_date(date: str, timezone: str) -> datetime.datetime:
@@ -249,57 +267,47 @@ class ExtractTaskTimeRange(ExtractTask):
     @property
     def start_date(self) -> datetime.datetime:
         if self.start is None:
-            raise ValueError('The start date is required for ExtractTaskTimeRange')
-        return self._parse_date(self.start, self.timezone)
+            return datetime.datetime(1980, 1, 1, tzinfo=zoneinfo.ZoneInfo(self.options.timezone))
+        return self._parse_date(self.start, self.options.timezone)
 
     @property
     def end_date(self) -> datetime.datetime:
         if self.end is None:
-            return datetime.datetime.now(tz=zoneinfo.ZoneInfo(self.timezone)) + datetime.timedelta(days=1)
-        return self._parse_date(self.end, self.timezone)
+            return datetime.datetime(2100, 12, 31, tzinfo=zoneinfo.ZoneInfo(self.options.timezone))
+        return self._parse_date(self.end, self.options.timezone)
 
 
-@dataclass
-class ExtractTaskLookBack(ExtractTaskTimeRange):
-    task_type: ClassVar[str] = field(default="ExtractTaskLookBack", init=False)
-    look_back: int = 1
-
-    def __post_init__(self):
-        now = datetime.datetime.now(tz=zoneinfo.ZoneInfo(self.timezone))
-        self.start = (now - datetime.timedelta(days=self.look_back)).isoformat()
-
-
-class ExtractFunction:
+class ExtractImpl:
     pass
 
 
-class ExtractFunctionSimple(ExtractFunction):
-    def extract(self, limit: int = 0) -> None:
+class ExtractImplSimple(ExtractImpl):
+    def extract(self, limit: int = 0):
         raise NotImplementedError
 
     def __call__(self, task: ExtractTask):
         return self.extract(task.limit)
 
 
-class ExtractFunctionTimeRange(ExtractFunction):
-    def extract(self, start_date: datetime.datetime, end_date: datetime.datetime, limit: int = 0) -> None:
+class ExtractImplTimeRange(ExtractImpl):
+    def extract(self, start_date: datetime.datetime, end_date: datetime.datetime, limit: int = 0):
         raise NotImplementedError
 
-    def run(self, task: ExtractTaskTimeRange | ExtractTaskLookBack):
+    def __call__(self, task: ExtractTask):
         return self.extract(task.start_date, task.end_date, task.limit)
 
 
-class ExtractFunctionBatched(ExtractFunction):
-    def extract(self, batches: int, batch_number: int, limit: int = 0) -> None:
+class ExtractImplBatched(ExtractImpl):
+    def extract(self, batches: int, batch_number: int, limit: int = 0):
         raise NotImplementedError
 
-    def run(self, task: ExtractTask):
-        return self.extract(task.batches, task.task_number, task.limit)
+    def __call__(self, task: ExtractTask):
+        return self.extract(task.options.batches, task.task_number, task.limit)
 
 
 @dataclass
-class ExtractTable(ABC, DbTable):
-    extract_function: ExtractFunctionType | None = None
+class ExtractTable(ABC, DbTable, Generic[ExtractImplType]):
+    extract_impl: ExtractImpl | None = None
 
     @abstractmethod
     def create_table_stmt(self) -> str:
@@ -317,15 +325,18 @@ class ExtractTable(ABC, DbTable):
     def load_from_stage(self):
         pass
 
-    def register_extract_function(self, func: ExtractFunction):
-        self.extract_function = func
+    def register_extract_impl(self, func: ExtractImpl | type[ExtractImpl]):
+        if isinstance(func, type(ExtractImpl)):
+            self.extract_impl = func()
+        if isinstance(func, ExtractImpl):
+            self.extract_impl = func
 
 
 @dataclass
 class ExtractLoadJob(Serializable):
     job_id: str
     clean: CleanTask | ErrorTask
-    extract: list[ExtractTaskType | ErrorTask]
+    extract: list[ExtractTask | ErrorTask]
     load: LoadTask | ErrorTask
 
     @classmethod
@@ -336,7 +347,7 @@ class ExtractLoadJob(Serializable):
         return super().from_dict(data)
 
     @classmethod
-    def from_table(cls, table: ExtractTable) -> 'ExtractLoadJob':
+    def from_table(cls, table: ExtractTable, limit: int = 0) -> 'ExtractLoadJob':
         job_id = uuid.uuid4().hex
         return cls(
             job_id=job_id,
@@ -353,7 +364,7 @@ class ExtractLoadJob(Serializable):
                     schema_name=table.schema_name,
                     table_name=table.table_name,
                     task_number=task_number,
-                    batches=table.options.batches,
+                    limit=limit,
                 ) for task_number in range(table.options.batches)
             ],
             load=LoadTask(
@@ -364,7 +375,7 @@ class ExtractLoadJob(Serializable):
             )
         )
 
-    def save(self):
+    def to_dynamodb(self):
         item = {
             'job_id': self.job_id,
             'clean': self.clean.task_id,
@@ -372,9 +383,15 @@ class ExtractLoadJob(Serializable):
             'load': self.load.task_id,
         }
         get_job_table().put_item(Item=item)
+        task_table = get_task_table()
+        task_table.put_item(Item=self.clean.as_dict)
+        for task in self.extract:
+            task_table.put_item(Item=task.as_dict)
+        task_table.put_item(Item=self.load.as_dict)
 
-    def load(self) -> 'ExtractLoadJob':
-        job_dict = get_job_table().get_item(Key={'job_id': self.job_id})['Item']
+    @classmethod
+    def from_dynamodb(cls, job_id: str) -> 'ExtractLoadJob':
+        job_dict = get_job_table().get_item(Key={'job_id': job_id})['Item']  # type: dict
         task_table = get_task_table()
         job_dict['clean'] = task_table.get_item(Key={'task_id': job_dict['clean']})['Item']
         job_dict['extract'] = [
@@ -393,11 +410,14 @@ class Schedule(Serializable):
 @dataclass
 class ScheduleTask(BaseTask):
     task_type: ClassVar[str] = field(default="ScheduleTask", init=False)
-    database_name: str
+    database_name: str | None = None
     schema_names: list[str] = field(default_factory=list)
     table_names: list[str] = field(default_factory=list)
+    limit: int = 0
 
     def __post_init__(self):
+        if self.database_name is None:
+            raise ValueError('database_name is required')
         self.schema_names = [schema_name.lower() for schema_name in self.schema_names]
         self.table_names = [table_name.lower() for table_name in self.table_names]
 
@@ -417,42 +437,39 @@ class ScheduleTask(BaseTask):
                 )
             ])
 
-        tables = warehouse.filter(self.schema_names, self.table_names)
+        tables: list[ExtractTable] = warehouse.filter(self.schema_names, self.table_names)
         schedule = Schedule()
-        table: ExtractTable
         for table in tables:
             if table.options.ignore:
                 continue
             schedule.schedule.append(
-                ExtractLoadJob.from_table(table)
+                ExtractLoadJob.from_table(table, limit=self.limit)
             )
         return schedule
 
 
-class TaskFactory:
-    _task_types: dict[str, BaseTaskType] = {
+class TaskFactory(Generic[BaseTaskType]):
+    _task_types: dict[str, type[BaseTask]] = {
         'ErrorTask': ErrorTask,
         'ExtractTask': ExtractTask,
-        'ExtractTaskTimeRange': ExtractTaskTimeRange,
-        'ExtractTaskLookBack': ExtractTaskLookBack,
         'CleanTask': CleanTask,
         'LoadTask': LoadTask,
         'ScheduleTask': ScheduleTask,
     }
 
     @classmethod
-    def register(cls, task_class: BaseTaskType) -> None:
-        instance = task_class.__new__(task_class)
+    def register(cls, task_class: type[BaseTaskType]) -> None:
+        instance: BaseTask = task_class.__new__(task_class)
         cls._task_types[instance.task_type] = task_class
 
     @classmethod
-    def from_dict(cls, data: dict) -> BaseTaskType:
+    def from_dict(cls, data: dict) -> BaseTask:
         task_type = data.get('task_type')
         if task_type not in cls._task_types:
             raise ValueError(f"Could not find task type: {task_type}")
         return cls._task_types[task_type].from_dict(data)
 
     @classmethod
-    def from_json(cls, json_str: str) -> BaseTaskType:
+    def from_json(cls, json_str: str) -> BaseTask:
         data = json.loads(json_str)
         return cls.from_dict(data)

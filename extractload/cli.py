@@ -3,20 +3,17 @@ import logging
 import os
 from enum import Enum
 from typing import Annotated
-from typing import Optional
 
 import typer
 from rich import print
 from typer import Option
 
-import extractload.wh_base
-from extractload.app import Action
-from extractload.app import ExtractLoadTask
-from extractload.app import ScheduleBaseTask
 from extractload.app import lambda_handler
 from extractload.clients import get_stepfunctions_client
-from extractload.config import aws_account_id
-from extractload.wh_base import DbWarehouse
+from extractload.config import Env
+from extractload.warehouse.sf_csv import SnowflakeWarehouse
+from extractload.warehouse.tasks import ExtractLoadJob
+from extractload.warehouse.tasks import ScheduleTask
 
 cli = typer.Typer(
     pretty_exceptions_enable=False
@@ -25,6 +22,8 @@ cli = typer.Typer(
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 logger.addHandler(logging.StreamHandler())
+
+aws_account_id = os.environ.get('AWS_ACCOUNT_ID')
 
 
 class Modes(str, Enum):
@@ -35,6 +34,14 @@ class Modes(str, Enum):
     local = 'local'
 
 
+def get_warehouse(env: Env) -> SnowflakeWarehouse:
+    os.environ['APP_ENV'] = env.value
+    return SnowflakeWarehouse.from_yaml_file()
+
+
+def get_extract_load_job(schema: str, table: str, env: Env):
+    warehouse = get_warehouse(env)
+    return ExtractLoadJob.from_table(warehouse[schema][table])
 
 
 @cli.command(name='clean')
@@ -46,13 +53,8 @@ def cli_clean(
     """
     Clean S3 Snowflake stage.
     """
-    task = ExtractLoadTask(
-        action=Action.cleanup,
-        database_name=extractload.tables.get_database_name(env),
-        schema_name=schema,
-        table_name=table,
-    )
-    response = lambda_handler(task.model_dump(), None)
+    task = get_extract_load_job(schema, table, env).clean
+    response = lambda_handler(task.as_dict, None)
     print(response)
 
 
@@ -60,19 +62,19 @@ def cli_clean(
 def cli_extract(
         schema: Annotated[str, Option(help="schema")],
         table: Annotated[str, Option(help="table")],
+        start: Annotated[str | None, Option(help="start date")] = None,
+        end: Annotated[str | None, Option(help="end date")] = None,
         env: Annotated[Env, Option(help="target environment")] = Env.dev,
 ):
     """
-    Extract warehouse_serialized from source and copy to S3 Snowflake stage.
+    Extract data from source and copy to S3 Snowflake stage.
     """
-    task = ExtractLoadTask(
-        action=Action.extract,
-        database_name=extractload.tables.get_database_name(env),
-        schema_name=schema,
-        table_name=table,
-        use_tunnel=True,
-    )
-    response = lambda_handler(task.model_dump(), None)
+    task = get_extract_load_job(schema, table, env).extract[0]
+    if start:
+        task.start = start
+    if end:
+        task.end = end
+    response = lambda_handler(task.as_dict, None)
     print(response)
 
 
@@ -83,83 +85,68 @@ def cli_load(
         env: Annotated[Env, Option(help="target environment")] = Env.dev,
 ):
     """
-    Load warehouse_serialized from stage to table in Snowflake.
+    Load data from stage to table in Snowflake.
     """
-    task = ExtractLoadTask(
-        action=Action.load,
-        database_name=extractload.tables.get_database_name(env),
-        schema_name=schema,
-        table_name=table,
-    )
-    response = lambda_handler(task.model_dump(), None)
+    task = get_extract_load_job(schema, table, env).load
+    response = lambda_handler(task.as_dict, None)
     print(response)
 
 
 @cli.command(name='schedule')
-def cli_schedule(
-        schema: Annotated[list[str], Option(help="schema")] = None,
-        table: Annotated[list[str], Option(help="table")] = None,
-        env: Annotated[Env, Option(help="target environment")] = Env.dev,
-):
+def cli_schedule():
     """
     Print schedule for extract and load tasks to console for testing.
     """
-    schedule_task = ScheduleBaseTask(
-        database_name=extractload.tables.get_database_name(env),
-        schema_names=schema,
-        table_names=table,
-    )
-    print(schedule_task)
-    print(schedule_task.schedule)
+    task = ScheduleTask(database_name='sources')
+    response = lambda_handler(task.as_dict, None)
+    print(response)
 
 
 @cli.command(name='run')
 def cli_run(
-        schema: Annotated[list[str], Option(help="schema")] = None,
-        table: Annotated[list[str], Option(help="table")] = None,
+        schema: Annotated[list[str] | None, Option(help="schema")] = None,
+        table: Annotated[list[str] | None, Option(help="table")] = None,
         env: Annotated[Env, Option(help="target environment")] = Env.dev,
         mode: Annotated[Modes, Option(help="local or remote execution")] = Modes.local,
-        limit: Annotated[Optional[int], Option(help="limit number of rows to extract")] = None,
+        limit: Annotated[int, Option(help="limit number of rows to extract")] = 0,
 ):
     """
     Run extract and load tasks. If no schema and table are provided, all tasks will be executed.
     """
-    os.environ['APP_ENV'] = env.value
-    schedule_task = ScheduleBaseTask(
-        database_name=extractload.tables.get_database_name(env),
-        schema_names=schema,
-        table_names=table,
+    warehouse = get_warehouse(env)
+    schedule_task = ScheduleTask(
+        database_name=warehouse.database_name,
+        schema_names=schema or [],
+        table_names=table or [],
         limit=limit,
-        use_tunnel=True,
     )
     if mode == Modes.local:
-        for job in schedule_task.schedule:
-            lambda_handler(job['cleanup'], None)
-            for task in job['extract']:
-                lambda_handler(task, None)
-            lambda_handler(job['load'], None)
+        for job in schedule_task(warehouse).schedule:
+            lambda_handler(job.clean.as_dict, None)
+            for task in job.extract:
+                lambda_handler(task.as_dict, None)
+            lambda_handler(job.load.as_dict, None)
     else:
-        schedule_task.use_tunnel = False
         extract_load_arn = f'arn:aws:states:eu-central-1:{aws_account_id}:stateMachine:ExtractLoadJobQueue-{env.value}'
         response_sf = get_stepfunctions_client().start_execution(
             stateMachineArn=extract_load_arn,
-            input=json.dumps(schedule_task.model_dump())
+            input=json.dumps(schedule_task.as_dict)
         )
         print(response_sf)
 
 
 @cli.command(name='tables')
 def cli_tables(
-        schema: Annotated[list[str], Option(help="schema")] = None,
-        table: Annotated[list[str], Option(help="table")] = None,
+        schema: Annotated[list[str] | None, Option(help="schema")] = None,
+        table: Annotated[list[str] | None, Option(help="table")] = None,
         env: Annotated[Env, Option(help="target environment")] = Env.dev,
         overwrite: bool = False,
 ):
     """
     Create tables in Snowflake according to src/extractload-pkg/tables.yaml.
     """
-    table = table or []
-    warehouse = DbWarehouse.from_yaml_file(extractload.tables.get_database_name(env))
+    warehouse = SnowflakeWarehouse.from_yaml_file()
+    warehouse.env = env
     warehouse.create_tables(schema_names=schema, table_names=table, overwrite=overwrite, save_files=True)
 
 

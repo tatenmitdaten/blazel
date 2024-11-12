@@ -36,6 +36,12 @@ def get_task_table() -> Table:
     return boto3.resource('dynamodb').Table(task_table_name)
 
 
+def get_extract_time_table() -> Table:
+    extract_time_table_stem = get_parameters()['ExtractTimeTableStem']
+    extract_time_table_name = f'{extract_time_table_stem}-{Env.get().value}'
+    return boto3.resource('dynamodb').Table(extract_time_table_name)
+
+
 def get_snowflake_staging_bucket() -> Bucket:
     """
     Get Snowflake staging bucket.
