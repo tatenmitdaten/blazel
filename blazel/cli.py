@@ -46,7 +46,7 @@ def cli_clean(
     """
     Clean S3 Snowflake stage.
     """
-    get_extract_load_job(schema, table, env).clean()
+    warehouse.run_task(get_extract_load_job(schema, table, env).clean)
 
 
 @cli.command(name='extract')
@@ -78,7 +78,7 @@ def cli_load(
     """
     Load data from stage to table in Snowflake.
     """
-    get_extract_load_job(schema, table, env).load()
+    warehouse.run_task(get_extract_load_job(schema, table, env).load)
 
 
 @cli.command(name='schedule')
@@ -101,6 +101,8 @@ def cli_run(
     """
     Run extract and load tasks. If no schema and table are provided, all tasks will be executed.
     """
+    global warehouse
+    warehouse.env = env
     schedule_task = ScheduleTask(
         database_name=warehouse.database_name,
         schema_names=schema,
@@ -109,10 +111,10 @@ def cli_run(
     )
     if mode == Modes.local:
         for job in schedule_task(warehouse).schedule:
-            job.clean(warehouse)
+            warehouse.run_task(job.clean)
             for task in job.extract:
-                task(warehouse)
-            job.load(warehouse)
+                warehouse.run_task(task)
+            warehouse.run_task(job.load)
     else:
         aws_account_id = os.environ.get('AWS_ACCOUNT_ID')
         extract_load_arn = f'arn:aws:states:eu-central-1:{aws_account_id}:stateMachine:ExtractLoadJobQueue-{env.value}'
@@ -137,7 +139,7 @@ def cli_tables(
     warehouse.create_tables(schema_names=schema, table_names=table, overwrite=overwrite, save_files=True)
 
 
-warehouse = SnowflakeWarehouse.from_yaml_file()
+warehouse: SnowflakeWarehouse = SnowflakeWarehouse.from_yaml_file()
 
 if __name__ == '__main__':
     cli()

@@ -1,11 +1,13 @@
 import json
+import logging
 from dataclasses import dataclass
 from dataclasses import fields
 from dataclasses import MISSING
 from typing import dataclass_transform
+from typing import TypeVar
 
-from blazel.tasks import logger
-from blazel.tasks import SerializableType
+SerializableType = TypeVar('SerializableType', bound='Serializable')
+logger = logging.getLogger(__name__)
 
 
 @dataclass_transform()

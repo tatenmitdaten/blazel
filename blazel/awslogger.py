@@ -2,7 +2,7 @@ import os
 import urllib.parse
 from dataclasses import dataclass
 
-from blazel.serialize import Serializable
+from blazel.serializable import Serializable
 
 
 @dataclass

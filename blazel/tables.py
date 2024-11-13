@@ -3,10 +3,12 @@ import datetime
 import gzip
 import io
 import logging
+from dataclasses import field
 from itertools import batched
 from pathlib import Path
 from typing import cast
 from typing import Generator
+from typing import TypeVar
 from zoneinfo import ZoneInfo
 
 from cryptography.hazmat.backends import default_backend
@@ -20,14 +22,19 @@ from blazel.clients import get_snowflake_secret
 from blazel.clients import get_snowflake_staging_bucket
 from blazel.config import default_timestamp_format
 from blazel.config import default_timezone
-from blazel.base import BaseWarehouse
 from blazel.tasks import Data
+from blazel.tasks import RunnableSchema
 from blazel.tasks import RunnableTable
-from blazel.base import BaseTableType
+from blazel.tasks import RunnableTaskType
+from blazel.tasks import RunnableWarehouse
 
 logger = logging.getLogger()
 
 default_stage_suffix = '_stage'
+
+SnowflakeTableType = TypeVar('SnowflakeTableType', bound='SnowflakeTable')
+SnowflakeSchemaType = TypeVar('SnowflakeSchemaType', bound='SnowflakeSchema')
+SnowflakeWarehouseType = TypeVar('SnowflakeWarehouseType', bound='SnowflakeWarehouse')
 
 
 def get_private_key_bytes(private_key_pem_string: str) -> bytes:
@@ -58,7 +65,7 @@ def get_snowflake_connection(database: str) -> SnowflakeConnection:
     )
 
 
-class SnowflakeTable(RunnableTable):
+class SnowflakeTable(RunnableTable[SnowflakeSchemaType, SnowflakeTableType, RunnableTaskType]):
 
     def create_table_stmt(self) -> str:
         def f_comment(comment: str | None) -> str:
@@ -220,25 +227,30 @@ class SnowflakeTableUpsert(SnowflakeTable):
         ]).replace(8 * ' ', '')
 
 
-class SnowflakeWarehouse(BaseWarehouse):
+class SnowflakeSchema(RunnableSchema[SnowflakeWarehouseType, SnowflakeSchemaType, SnowflakeTableType]):
+    pass
 
-    def table_class(self, table_serialized: dict[str, dict | None]) -> type[BaseTableType]:
+
+class SnowflakeWarehouse(RunnableWarehouse[SnowflakeWarehouseType, SnowflakeSchemaType, SnowflakeTableType]):
+    schemas: dict[str, SnowflakeSchemaType] = field(default_factory=dict)
+
+    def table_class(self, table_serialized: dict[str, dict | None]) -> type[SnowflakeTableType]:
         options = table_serialized.get('options') or {}
         has_primary_key = options.get('primary_key') is not None
         if has_primary_key:
-            return cast(type[BaseTableType], SnowflakeTableUpsert)
-        return cast(type[BaseTableType], SnowflakeTableOverwrite)
+            return cast(type[SnowflakeTableType], SnowflakeTableUpsert)
+        return cast(type[SnowflakeTableType], SnowflakeTableOverwrite)
 
     def create_tables(
             self,
-            schema_names: set[str] | None = None,
-            table_names: set[str] | None = None,
+            schema_names: set[str] | list[str] | None = None,
+            table_names: set[str] | list[str] | None = None,
             overwrite: bool = False,
             save_files: bool = False
     ):
         with get_snowflake_connection(self.database_name) as snowflake_conn:
             with snowflake_conn.cursor() as snowflake_cursor:
-                tables: list[SnowflakeTable] = self.filter(schema_names, table_names)
+                tables = self.filter(schema_names, table_names)
                 for table in tables:
                     create_stmt = table.create_table_stmt()
                     if save_files:

@@ -33,5 +33,5 @@ def parameters(monkeysession):
         'ExtractTimeTableStem': 'extract-time-table',
         'SnowflakeStagingBucketStem': 'snowflake-staging-bucket',
     }
-    monkeysession.setattr('extractload.clients.get_parameters', lambda: parameter_dict)
+    monkeysession.setattr('blazel.clients.get_parameters', lambda: parameter_dict)
     return parameter_dict

@@ -21,22 +21,28 @@ from blazel.clients import get_extract_time_table
 from blazel.clients import get_job_table
 from blazel.clients import get_task_table
 from blazel.config import default_timestamp_format
-from blazel.serialize import Serializable
+from blazel.serializable import SerializableType
+from blazel.serializable import Serializable
 
 logger = logging.getLogger()
 
 DictRow = dict[str, object]
 Data = Generator[DictRow, None, None] | list[DictRow]
-SerializableType = TypeVar('SerializableType', bound='Serializable')
 RunnableTaskType = TypeVar('RunnableTaskType', bound='RunnableTask')
 BaseTaskType = TypeVar('BaseTaskType', bound='BaseTask')
 ExtractTaskType = TypeVar('ExtractTaskType', bound='ExtractTask')
 RunnableTableType = TypeVar('RunnableTableType', bound='RunnableTable')
+RunnableSchemaType = TypeVar('RunnableSchemaType', bound='RunnableSchema')
+RunnableWarehouseType = TypeVar('RunnableWarehouseType', bound='RunnableWarehouse')
 ExtractFunctionType = Callable[[RunnableTableType, RunnableTaskType], Data]
 
 
 @dataclass
-class RunnableTable(ABC, BaseTable, Generic[RunnableTableType, RunnableTaskType]):
+class RunnableTable(
+    ABC,
+    BaseTable[RunnableSchemaType, RunnableTableType],
+    Generic[RunnableSchemaType, RunnableTableType, RunnableTaskType]
+):
     extract_function: ExtractFunctionType | None = None
 
     @abstractmethod
@@ -54,16 +60,16 @@ class RunnableTable(ABC, BaseTable, Generic[RunnableTableType, RunnableTaskType]
     def register_extract_function(self, f: ExtractFunctionType):
         self.extract_function = f
 
+
+class RunnableSchema(BaseSchema[RunnableWarehouseType, RunnableSchemaType, RunnableTableType]):
+    pass
+
+
+class RunnableWarehouse(BaseWarehouse[RunnableWarehouseType, RunnableSchemaType, RunnableTableType]):
+
     def run_task(self, task: RunnableTaskType):
-        return task(self)
-
-
-class RunnableSchema(BaseSchema):
-    tables: dict[str, RunnableTable] = field(default_factory=dict)
-
-
-class RunnableWarehouse(BaseWarehouse):
-    schemas: dict[str, RunnableSchema] = field(default_factory=dict)
+        table = self[task.schema_name][task.table_name]
+        return task(table)
 
 
 @dataclass
@@ -71,22 +77,11 @@ class BaseTask(Serializable):
     task_type: ClassVar[str] = field(default="BaseTask", init=False)
     task_id: str = field(default_factory=lambda: uuid.uuid4().hex, init=False)
 
-    def __call__(self, warehouse: BaseWarehouse):
-        raise NotImplementedError
-
     @property
     def as_dict(self) -> dict:
         obj_dict = super().as_dict
         obj_dict['task_type'] = self.task_type
         return obj_dict
-
-
-@dataclass
-class ErrorTask(BaseTask):
-    task_type: ClassVar[str] = field(default="ErrorTask", init=False)
-
-    def __call__(self, warehouse: BaseWarehouse):
-        raise RuntimeError('Test Error')
 
 
 @dataclass
@@ -124,6 +119,14 @@ class RunnableTask(BaseTask):
     def from_dynamodb(cls: type[RunnableTaskType], task_id) -> RunnableTaskType:
         task_dict = get_task_table().get_item(Key={'task_id': task_id})
         return cls.from_dict(task_dict['Item'])
+
+
+@dataclass
+class ErrorTask(RunnableTask):
+    task_type: ClassVar[str] = field(default="ErrorTask", init=False)
+
+    def __call__(self, table: RunnableTableType):
+        raise RuntimeError('Test Error')
 
 
 @dataclass

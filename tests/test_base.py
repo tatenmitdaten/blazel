@@ -4,9 +4,9 @@ from itertools import product
 import pytest
 
 from blazel.clients import Env
-from warehouse.base import DbSchema
-from warehouse.base import DbTable
-from warehouse.base import DbWarehouse
+from blazel.base import BaseSchema
+from blazel.base import BaseTable
+from blazel.base import BaseWarehouse
 
 
 @pytest.fixture
@@ -55,16 +55,16 @@ schema1:
 
 
 @pytest.fixture
-def warehouse() -> DbWarehouse:
+def warehouse() -> BaseWarehouse:
     n = 10
-    warehouse = DbWarehouse()
+    warehouse = BaseWarehouse()
     for i in range(n):
         schema_name = f'schema{i}'
-        schema = DbSchema(warehouse, schema_name=schema_name)
+        schema = BaseSchema(warehouse, schema_name=schema_name)
         warehouse.schemas[schema_name] = schema
         for j in range(n):
             table_name = f'table{j}'
-            schema.tables[table_name] = DbTable(schema=schema, table_name=table_name)
+            schema.tables[table_name] = BaseTable(schema=schema, table_name=table_name)
     yield warehouse
 
 
@@ -78,27 +78,27 @@ def warehouse_yaml_file(warehouse_yaml, tmp_path_factory):
 
 
 def test_warehouse_env(warehouse_dict):
-    warehouse = DbWarehouse.from_serialized({})
-    assert warehouse.database_name == 'sources_dev'
-    warehouse.env = Env.prod
-    assert warehouse.database_name == 'sources'
+    wh = BaseWarehouse.from_serialized({})
+    assert wh.database_name == 'sources_dev'
+    wh.env = Env.prod
+    assert wh.database_name == 'sources'
 
 
 def test_warehouse_from_dict(warehouse_dict):
-    warehouse = DbWarehouse.from_serialized(warehouse_dict)
-    assert warehouse.serialized == warehouse_dict
+    wh = BaseWarehouse.from_serialized(warehouse_dict)
+    assert wh.serialized == warehouse_dict
 
 
 def test_warehouse_from_yaml(warehouse_yaml):
-    warehouse = DbWarehouse.from_yaml(warehouse_yaml)
-    assert warehouse.as_yaml == warehouse_yaml
+    wh = BaseWarehouse.from_yaml(warehouse_yaml)
+    assert wh.as_yaml == warehouse_yaml
 
 
 def test_warehouse_from_yaml_file(warehouse_yaml_file, warehouse_yaml):
-    warehouse = DbWarehouse.from_yaml_file()  # uses TABLES_YAML_PATH env var
-    assert warehouse.as_yaml == warehouse_yaml
-    warehouse = DbWarehouse.from_yaml_file(warehouse_yaml_file)  # uses explicit path
-    assert warehouse.as_yaml == warehouse_yaml
+    wh = BaseWarehouse.from_yaml_file()  # uses TABLES_YAML_PATH env var
+    assert wh.as_yaml == warehouse_yaml
+    wh = BaseWarehouse.from_yaml_file(warehouse_yaml_file)  # uses explicit path
+    assert wh.as_yaml == warehouse_yaml
 
 
 def test_warehouse_filter(warehouse):

@@ -1,15 +1,12 @@
-import datetime
-
 import boto3
 import pytest
 
+from blazel.tables import SnowflakeTable
+from blazel.tables import SnowflakeWarehouse
 from blazel.tasks import ExtractLoadJob
 from blazel.tasks import ExtractTask
+from blazel.tasks import RunnableTable
 from blazel.tasks import ScheduleTask
-from warehouse.sf_csv import SnowflakeWarehouse
-from warehouse.tasks import ExtractImplSimple
-from warehouse.tasks import ExtractImplTimeRange
-from warehouse.tasks import ExtractTable
 
 
 @pytest.fixture
@@ -109,32 +106,18 @@ def test_persist_job(job_table, task_table, warehouse, parameters):
 
 
 def test_register_extract_simple(warehouse):
-    class TestExtractImplSimple(ExtractImplSimple):
-        def extract(self, limit: int = 0):
-            return 'test'
+    def extract(rt: RunnableTable, et: ExtractTask):
+        print(rt.table_uri)
+        print(et.job_id)
+        return 'test'
 
-    table = warehouse['schema0']['table0']
-    table.register_extract_impl(TestExtractImplSimple)
+    table: SnowflakeTable = warehouse['schema0']['table0']
+    table.register_extract_function(extract)
+
     task = ExtractTask(
-        job_id='test',
+        job_id='job_id',
         database_name='sources',
         schema_name='schema0',
         table_name='table0',
     )
-    assert task(warehouse) == 'test'
-
-
-def test_register_extract_time_range(warehouse):
-    class TestExtractImplTimeRange(ExtractImplTimeRange):
-        def extract(self, start_date: datetime.datetime, end_date: datetime.datetime, limit: int = 0):
-            return f'{start_date} - {end_date}'
-
-    table: ExtractTable = warehouse['schema0']['table0']
-    table.register_extract_impl(TestExtractImplTimeRange)
-    task = ExtractTask(
-        job_id='test',
-        database_name='sources',
-        schema_name='schema0',
-        table_name='table0',
-    )
-    assert task(warehouse) == '1980-01-01 00:00:00+01:00 - 2100-12-31 00:00:00+01:00'
+    assert warehouse.run_task(task) == 'test'

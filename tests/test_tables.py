@@ -6,17 +6,17 @@ import boto3
 import pytest
 from mypy_boto3_s3.service_resource import Bucket
 
-from warehouse.base import DbSchema
-from warehouse.sf_csv import SnowflakeTable
-from warehouse.sf_csv import SnowflakeTableOverwrite
-from warehouse.sf_csv import SnowflakeTableUpsert
-from warehouse.sf_csv import SnowflakeWarehouse
-from warehouse.tasks import Data
-from warehouse.tasks import ExtractLoadJob
+from blazel.tables import SnowflakeSchema
+from blazel.tables import SnowflakeTable
+from blazel.tables import SnowflakeTableOverwrite
+from blazel.tables import SnowflakeTableUpsert
+from blazel.tables import SnowflakeWarehouse
+from blazel.tasks import Data
+from blazel.tasks import ExtractLoadJob
 
 
 @pytest.fixture(scope='session')
-def schema() -> DbSchema:
+def schema() -> SnowflakeSchema:
     columns = {
         'column0': 'varchar',
         'column1': 'datetime',
@@ -59,7 +59,7 @@ TRUNCATE TABLE IF EXISTS sources_dev.schema0.table_csv_overwrite;
 COPY INTO sources_dev.schema0.table_csv_overwrite (column0, column1)
 FROM @sources_dev.public.stage/schema0/table_csv_overwrite/
 FILE_FORMAT = (
-    TYPE = 'csv'
+    TYPE = CSV
     FIELD_DELIMITER = ';'
     EMPTY_FIELD_AS_NULL = TRUE
     SKIP_HEADER = 1
@@ -77,7 +77,7 @@ CREATE TABLE sources_dev.schema0.table_csv_upsert_stage LIKE sources_dev.schema0
 COPY INTO sources_dev.schema0.table_csv_upsert_stage (column0, column1)
 FROM @sources_dev.public.stage/schema0/table_csv_upsert/
 FILE_FORMAT = (
-    TYPE = 'csv'
+    TYPE = CSV
     FIELD_DELIMITER = ';'
     EMPTY_FIELD_AS_NULL = TRUE
     SKIP_HEADER = 1
@@ -192,6 +192,6 @@ def test_extract_task_lookback(monkeypatch, table0):
     latest_timestamp = '2024-01-01T00:00:00'
     now_timestamp = datetime.datetime.strptime('2024-01-02T00:00:00', '%Y-%m-%dT%H:%M:%S')
     table0.options.look_back_days = 1
-    monkeypatch.setattr('warehouse.tasks.ExtractTask._get_now_timestamp', lambda self: now_timestamp)
+    monkeypatch.setattr('blazel.tasks.ExtractTask._get_now_timestamp', lambda self: now_timestamp)
     task = ExtractLoadJob.from_table(table0).extract[0]
     assert task.start == latest_timestamp

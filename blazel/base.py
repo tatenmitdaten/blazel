@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import cast
 from typing import dataclass_transform
 from typing import Generic
-from typing import Iterable
+from typing import Iterator
 from typing import TypeVar
 
 import yaml
@@ -92,8 +92,8 @@ class TableOptions(BaseOptions):
 
 @dataclass_transform()
 @dataclass
-class BaseTable:
-    schema: 'BaseSchema'
+class BaseTable(Generic[BaseSchemaType, BaseTableType]):
+    schema: BaseSchemaType
     table_name: str
     columns: dict[str, Column] = field(default_factory=dict)
     options: TableOptions = field(default_factory=TableOptions)
@@ -103,6 +103,7 @@ class BaseTable:
 
     @property
     def database_name(self) -> str:
+        # noinspection PyTypeChecker
         return self.schema.warehouse.database_name
 
     @property
@@ -150,12 +151,12 @@ class BaseTable:
 
 
 @dataclass
-class BaseSchema(Generic[BaseTableType]):
-    warehouse: 'BaseWarehouse'
+class BaseSchema(Generic[BaseWarehouseType, BaseSchemaType, BaseTableType]):
+    warehouse: BaseWarehouseType
     schema_name: str
-    tables: dict[str, BaseTableType] = field(default_factory=dict)
+    tables: dict[str, BaseTableType] = field(default_factory=dict[str, BaseTableType])
 
-    def __iter__(self) -> Iterable[BaseTableType]:
+    def __iter__(self) -> Iterator[BaseTableType]:
         return iter(self.tables.values())
 
     def __getitem__(self, item) -> BaseTableType:
@@ -178,7 +179,7 @@ class BaseSchema(Generic[BaseTableType]):
 
     @classmethod
     def from_serialized(
-            cls,
+            cls: type[BaseSchemaType],
             warehouse: BaseWarehouseType,
             schema_name: str,
             schema_serialized: dict
@@ -195,11 +196,11 @@ class BaseSchema(Generic[BaseTableType]):
 
 
 @dataclass
-class BaseWarehouse(Generic[BaseSchemaType, BaseTableType]):
+class BaseWarehouse(Generic[BaseWarehouseType, BaseSchemaType, BaseTableType]):
     env: Env = Env.get()
-    schemas: dict[str, BaseSchemaType] = field(default_factory=dict)
+    schemas: dict[str, BaseSchemaType] = field(default_factory=dict[str, BaseSchemaType])
 
-    def __iter__(self) -> Iterable[BaseSchemaType]:
+    def __iter__(self) -> Iterator[BaseSchemaType]:
         return iter(self.schemas.values())
 
     def __getitem__(self, item) -> BaseSchemaType:
@@ -234,7 +235,7 @@ class BaseWarehouse(Generic[BaseSchemaType, BaseTableType]):
         return {schema.schema_name: schema.serialized for schema in self}
 
     @classmethod
-    def from_serialized(cls, warehouse_serialized: dict):
+    def from_serialized(cls: type[BaseWarehouseType], warehouse_serialized: dict) -> BaseWarehouseType:
         warehouse = cls()
         for schema_name, schema_serialized in warehouse_serialized.items():
             warehouse.schemas[schema_name] = BaseSchema.from_serialized(
@@ -245,7 +246,7 @@ class BaseWarehouse(Generic[BaseSchemaType, BaseTableType]):
         return warehouse
 
     @classmethod
-    def from_yaml_file(cls, file: Path | str | None = None):
+    def from_yaml_file(cls: type[BaseWarehouseType], file: Path | str | None = None) -> BaseWarehouseType:
         file = file or os.environ.get('TABLES_YAML_PATH')
         if file is None:
             raise ValueError('No warehouse definition file provided')
@@ -258,7 +259,7 @@ class BaseWarehouse(Generic[BaseSchemaType, BaseTableType]):
         return cls.from_yaml(yaml_str)
 
     @classmethod
-    def from_yaml(cls, yaml_str: str):
+    def from_yaml(cls: type[BaseWarehouseType], yaml_str: str) -> BaseWarehouseType:
         return cls.from_serialized(yaml.safe_load(yaml_str))
 
     @property
