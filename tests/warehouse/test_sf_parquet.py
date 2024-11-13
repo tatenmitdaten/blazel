@@ -1,14 +1,14 @@
 import pytest
 
-from extractload.warehouse.base import DbSchema
-from extractload.warehouse.sf_csv import SnowflakeTableOverwrite
-from extractload.warehouse.sf_csv import SnowflakeTableUpsert
-from extractload.warehouse.sf_parquet import SnowflakeTableParquet
-from extractload.warehouse.sf_parquet import SnowflakeWarehouseParquet
+from blazel.base import BaseSchema
+from blazel.tables import SnowflakeTableOverwrite
+from blazel.tables import SnowflakeTableUpsert
+from blazel.parquet import SnowflakeTableParquet
+from blazel.parquet import SnowflakeWarehouseParquet
 
 
 @pytest.fixture(scope='session')
-def schema() -> DbSchema:
+def schema() -> BaseSchema:
     columns = {
         'column0': 'varchar',
         'column1': 'varchar',

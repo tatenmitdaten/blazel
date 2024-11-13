@@ -15,15 +15,15 @@ from snowflake.connector import connect
 from snowflake.connector import SnowflakeConnection
 from snowflake.connector.errors import ProgrammingError
 
-from extractload.clients import get_extract_time_table
-from extractload.clients import get_snowflake_secret
-from extractload.clients import get_snowflake_staging_bucket
-from extractload.config import default_timestamp_format
-from extractload.config import default_timezone
-from extractload.warehouse.base import DbWarehouse
-from extractload.warehouse.tasks import Data
-from extractload.warehouse.tasks import ExtractTable
-from extractload.warehouse.base import TableType
+from blazel.clients import get_extract_time_table
+from blazel.clients import get_snowflake_secret
+from blazel.clients import get_snowflake_staging_bucket
+from blazel.config import default_timestamp_format
+from blazel.config import default_timezone
+from blazel.base import BaseWarehouse
+from blazel.tasks import Data
+from blazel.tasks import RunnableTable
+from blazel.base import BaseTableType
 
 logger = logging.getLogger()
 
@@ -58,7 +58,7 @@ def get_snowflake_connection(database: str) -> SnowflakeConnection:
     )
 
 
-class SnowflakeTable(ExtractTable):
+class SnowflakeTable(RunnableTable):
 
     def create_table_stmt(self) -> str:
         def f_comment(comment: str | None) -> str:
@@ -114,7 +114,7 @@ class SnowflakeTable(ExtractTable):
         COPY INTO {self.table_uri}{suffix} ({column_names})
         FROM @{self.database_name}.public.stage/{self.schema_name}/{self.table_name}/
         FILE_FORMAT = (
-            TYPE = 'csv'
+            TYPE = CSV
             FIELD_DELIMITER = ';'
             EMPTY_FIELD_AS_NULL = TRUE
             SKIP_HEADER = 1
@@ -177,7 +177,7 @@ class SnowflakeTable(ExtractTable):
         with get_snowflake_connection(self.database_name) as snowflake_conn:
             logger.info(f'Connected to Snowflake account {snowflake_conn.account}.')
             with snowflake_conn.cursor() as snowflake_cursor:
-                for stmt in self.load_stmt().split(';'):
+                for stmt in self.load_stmt().split(';\n'):
                     if stmt.strip():
                         logger.info(stmt)
                         snowflake_cursor.execute(stmt)
@@ -220,14 +220,14 @@ class SnowflakeTableUpsert(SnowflakeTable):
         ]).replace(8 * ' ', '')
 
 
-class SnowflakeWarehouse(DbWarehouse):
+class SnowflakeWarehouse(BaseWarehouse):
 
-    def table_class(self, table_serialized: dict[str, dict | None]) -> type[TableType]:
+    def table_class(self, table_serialized: dict[str, dict | None]) -> type[BaseTableType]:
         options = table_serialized.get('options') or {}
         has_primary_key = options.get('primary_key') is not None
         if has_primary_key:
-            return cast(type[TableType], SnowflakeTableUpsert)
-        return cast(type[TableType], SnowflakeTableOverwrite)
+            return cast(type[BaseTableType], SnowflakeTableUpsert)
+        return cast(type[BaseTableType], SnowflakeTableOverwrite)
 
     def create_tables(
             self,

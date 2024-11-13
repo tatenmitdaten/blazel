@@ -3,10 +3,9 @@ import datetime
 import boto3
 import pytest
 
-from extractload.warehouse.tasks import ExtractImpl
-from extractload.warehouse.tasks import ExtractLoadJob
-from extractload.warehouse.tasks import ExtractTask
-from extractload.warehouse.tasks import ScheduleTask
+from blazel.tasks import ExtractLoadJob
+from blazel.tasks import ExtractTask
+from blazel.tasks import ScheduleTask
 from warehouse.sf_csv import SnowflakeWarehouse
 from warehouse.tasks import ExtractImplSimple
 from warehouse.tasks import ExtractImplTimeRange

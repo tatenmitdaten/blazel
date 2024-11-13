@@ -1,5 +1,6 @@
-from extractload.warehouse.sf_csv import SnowflakeWarehouse
-from extractload.warehouse.tasks import TaskFactory
+from blazel.tables import SnowflakeWarehouse
+from blazel.tasks import TaskFactory
+
 
 
 def lambda_handler(event: dict, context):

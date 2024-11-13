@@ -1,153 +1,69 @@
 import datetime
 import json
 import logging
-import os
-import urllib.parse
 import uuid
 import zoneinfo
 from abc import ABC
 from abc import abstractmethod
 from dataclasses import dataclass
 from dataclasses import field
-from dataclasses import fields
-from dataclasses import MISSING
+from typing import Callable
 from typing import ClassVar
-from typing import dataclass_transform
 from typing import Generator
 from typing import Generic
 from typing import TypeVar
 
-from extractload.clients import get_extract_time_table
-from extractload.clients import get_job_table
-from extractload.clients import get_task_table
-from extractload.config import default_timestamp_format
-from extractload.warehouse.base import BaseOptions
-from extractload.warehouse.base import DbTable
-from extractload.warehouse.base import DbWarehouse
+from blazel.base import BaseOptions
+from blazel.base import BaseSchema
+from blazel.base import BaseTable
+from blazel.base import BaseWarehouse
+from blazel.clients import get_extract_time_table
+from blazel.clients import get_job_table
+from blazel.clients import get_task_table
+from blazel.config import default_timestamp_format
+from blazel.serialize import Serializable
 
 logger = logging.getLogger()
 
-SerializableType = TypeVar('SerializableType', bound='Serializable')
-TableTaskType = TypeVar('TableTaskType', bound='TableTask')
-BaseTaskType = TypeVar('BaseTaskType', bound='BaseTask')
-ExtractTaskType = TypeVar('ExtractTaskType', bound='ExtractTask')
-ExtractImplType = TypeVar('ExtractImplType', bound='ExtractImpl')
 DictRow = dict[str, object]
 Data = Generator[DictRow, None, None] | list[DictRow]
-
-
-@dataclass_transform()
-@dataclass
-class Serializable:
-
-    @property
-    def as_dict(self) -> dict:
-        def _as_dict(obj: object) -> object:
-            match obj:
-                case Serializable() as s:
-                    return s.as_dict
-                case list() as list_member:
-                    return [_as_dict(item) for item in list_member]
-                case dict() as dict_member:
-                    return {k: _as_dict(v) for k, v in dict_member.items()}
-                case _:
-                    return obj
-
-        obj_dict = {}
-        # noinspection PyTypeChecker
-        for f in fields(self):
-            default = MISSING
-            if f.default is not MISSING:
-                default = f.default
-            elif f.default_factory is not MISSING:
-                default = f.default_factory()
-
-            value = getattr(self, f.name)
-            if value != default:
-                obj_dict[f.name] = _as_dict(value)
-        return obj_dict
-
-    @classmethod
-    def from_dict(cls: type[SerializableType], data: dict) -> SerializableType:
-        init_field_names = {f.name for f in fields(cls) if f.init}
-        fields_dict = {}
-        for key, value in data.items():
-            if key in init_field_names:
-                fields_dict[key] = value
-        try:
-            # noinspection PyArgumentList
-            obj = cls(**fields_dict)
-            for f in fields(cls):
-                if not f.init and f.name in data:
-                    setattr(obj, f.name, data[f.name])
-        except TypeError as e:
-            logger.error(f'Error creating {cls.__name__} from {data}')
-            raise e
-        return obj
-
-    @classmethod
-    def from_json(cls: type[SerializableType], json_str: str) -> SerializableType:
-        return cls.from_dict(json.loads(json_str))
+SerializableType = TypeVar('SerializableType', bound='Serializable')
+RunnableTaskType = TypeVar('RunnableTaskType', bound='RunnableTask')
+BaseTaskType = TypeVar('BaseTaskType', bound='BaseTask')
+ExtractTaskType = TypeVar('ExtractTaskType', bound='ExtractTask')
+RunnableTableType = TypeVar('RunnableTableType', bound='RunnableTable')
+ExtractFunctionType = Callable[[RunnableTableType, RunnableTaskType], Data]
 
 
 @dataclass
-class LambdaContext(Serializable):
-    execution_env: str | None = None
-    default_region: str | None = None
-    function_name: str | None = None
-    function_version: str | None = None
-    invoked_function_arn: str | None = None
-    memory_limit_in_mb: str | None = None
-    log_group_name: str | None = None
-    log_stream_name: str | None = None
-    aws_request_id: str | None = None
+class RunnableTable(ABC, BaseTable, Generic[RunnableTableType, RunnableTaskType]):
+    extract_function: ExtractFunctionType | None = None
 
-    @classmethod
-    def from_context(cls, context):
-        lambda_context = cls(
-            execution_env=os.environ.get('AWS_EXECUTION_ENV'),
-            default_region=os.environ.get('AWS_DEFAULT_REGION'),
-            function_name=context.function_name,
-            function_version=context.function_version,
-            invoked_function_arn=context.invoked_function_arn,
-            memory_limit_in_mb=context.memory_limit_in_mb,
-            log_group_name=context.log_group_name,
-            log_stream_name=context.log_stream_name,
-            aws_request_id=context.aws_request_id
-        )
-        return lambda_context
+    @abstractmethod
+    def clean_stage(self):
+        pass
 
-    @property
-    def cloudwatch_link(self) -> str | None:
-        if self.default_region is None or self.log_group_name is None or self.log_stream_name is None or self.aws_request_id is None:
-            return None
-        return self.get_cloudwatch_link(
-            self.default_region,
-            self.log_group_name,
-            self.log_stream_name,
-            self.aws_request_id
-        )
+    @abstractmethod
+    def load_from_stage(self):
+        pass
 
-    @staticmethod
-    def get_cloudwatch_link(
-            region: str,
-            log_group_name: str,
-            log_stream_name: str,
-            aws_request_id: str
-    ) -> str:
-        """
-        Generate a deep link to the specific Lambda function log in AWS CloudWatch Logs.
-        """
-        encoded_log_group = urllib.parse.quote(log_group_name, safe='')
-        encoded_log_stream = urllib.parse.quote(log_stream_name, safe='')
-        filter_pattern = urllib.parse.quote(f'"{aws_request_id}"', safe='')
-        return (
-            f'https://{region}.console.aws.amazon.com/cloudwatch/home'
-            f'?region={region}'
-            f'#logsV2:log-groups/log-group/{encoded_log_group}'
-            f'/log-events/{encoded_log_stream}'
-            f'?filterPattern={filter_pattern}'
-        )
+    @abstractmethod
+    def upload_to_stage(self, data: Data):
+        pass
+
+    def register_extract_function(self, f: ExtractFunctionType):
+        self.extract_function = f
+
+    def run_task(self, task: RunnableTaskType):
+        return task(self)
+
+
+class RunnableSchema(BaseSchema):
+    tables: dict[str, RunnableTable] = field(default_factory=dict)
+
+
+class RunnableWarehouse(BaseWarehouse):
+    schemas: dict[str, RunnableSchema] = field(default_factory=dict)
 
 
 @dataclass
@@ -155,7 +71,7 @@ class BaseTask(Serializable):
     task_type: ClassVar[str] = field(default="BaseTask", init=False)
     task_id: str = field(default_factory=lambda: uuid.uuid4().hex, init=False)
 
-    def __call__(self, warehouse: DbWarehouse):
+    def __call__(self, warehouse: BaseWarehouse):
         raise NotImplementedError
 
     @property
@@ -169,17 +85,20 @@ class BaseTask(Serializable):
 class ErrorTask(BaseTask):
     task_type: ClassVar[str] = field(default="ErrorTask", init=False)
 
-    def __call__(self, warehouse: DbWarehouse):
+    def __call__(self, warehouse: BaseWarehouse):
         raise RuntimeError('Test Error')
 
 
 @dataclass
-class TableTask(BaseTask):
-    task_type: ClassVar[str] = field(default="TableTask", init=False)
+class RunnableTask(BaseTask):
+    task_type: ClassVar[str] = field(default="RunnableTask", init=False)
     job_id: str | None = None
     database_name: str | None = None
     schema_name: str | None = None
     table_name: str | None = None
+
+    def __call__(self, table: RunnableTableType):
+        raise NotImplementedError
 
     def __post_init__(self):
         if self.job_id is None:
@@ -202,46 +121,40 @@ class TableTask(BaseTask):
         get_task_table().put_item(Item=self.as_dict)
 
     @classmethod
-    def from_dynamodb(cls: type[TableTaskType], task_id) -> TableTaskType:
+    def from_dynamodb(cls: type[RunnableTaskType], task_id) -> RunnableTaskType:
         task_dict = get_task_table().get_item(Key={'task_id': task_id})
         return cls.from_dict(task_dict['Item'])
 
 
 @dataclass
-class CleanTask(TableTask):
+class CleanTask(RunnableTask):
     task_type: ClassVar[str] = field(default="CleanTask", init=False)
 
-    def __call__(self, warehouse: DbWarehouse | None = None):
-        if warehouse is None:
-            # load warehouse from default yaml file
-            warehouse = DbWarehouse.from_yaml_file()
-        return warehouse[self.schema_name][self.table_name].clean_stage()
+    def __call__(self, table: RunnableTableType):
+        return table.clean_stage()
 
 
 @dataclass
-class LoadTask(TableTask):
+class LoadTask(RunnableTask):
     task_type: ClassVar[str] = field(default="LoadTask", init=False)
 
-    def __call__(self, warehouse: DbWarehouse | None = None):
-        if warehouse is None:
-            # load warehouse from default yaml file
-            warehouse = DbWarehouse.from_yaml_file()
-        return warehouse[self.schema_name][self.table_name].load_from_stage()
+    def __call__(self, table: RunnableTableType):
+        return table.load_from_stage()
 
 
 @dataclass
-class ExtractTask(TableTask):
+class ExtractTask(RunnableTask):
     task_type: ClassVar[str] = field(default="ExtractTask", init=False)
     task_number: int = 0
-    limit: int = 0
     start: str | None = None
     end: str | None = None
     options: BaseOptions = field(default_factory=BaseOptions)
+    limit: int = 0
 
-    def __call__(self, warehouse: DbWarehouse):
-        if warehouse[self.schema_name][self.table_name].extract_impl is None:
-            raise NotImplementedError(f'No extract function registered for {self.table_uri}')
-        return warehouse[self.schema_name][self.table_name].extract_impl(self)
+    def __call__(self, table: RunnableTableType):
+        if table.extract_function is None:
+            raise ValueError(f'No extract function registered for table {self.table_uri}')
+        return table.extract_function(table, self)
 
     def __post_init__(self):
         if self.start is None:
@@ -277,61 +190,6 @@ class ExtractTask(TableTask):
         return self._parse_date(self.end, self.options.timezone)
 
 
-class ExtractImpl:
-    pass
-
-
-class ExtractImplSimple(ExtractImpl):
-    def extract(self, limit: int = 0):
-        raise NotImplementedError
-
-    def __call__(self, task: ExtractTask):
-        return self.extract(task.limit)
-
-
-class ExtractImplTimeRange(ExtractImpl):
-    def extract(self, start_date: datetime.datetime, end_date: datetime.datetime, limit: int = 0):
-        raise NotImplementedError
-
-    def __call__(self, task: ExtractTask):
-        return self.extract(task.start_date, task.end_date, task.limit)
-
-
-class ExtractImplBatched(ExtractImpl):
-    def extract(self, batches: int, batch_number: int, limit: int = 0):
-        raise NotImplementedError
-
-    def __call__(self, task: ExtractTask):
-        return self.extract(task.options.batches, task.task_number, task.limit)
-
-
-@dataclass
-class ExtractTable(ABC, DbTable, Generic[ExtractImplType]):
-    extract_impl: ExtractImpl | None = None
-
-    @abstractmethod
-    def create_table_stmt(self) -> str:
-        pass
-
-    @abstractmethod
-    def clean_stage(self):
-        pass
-
-    @abstractmethod
-    def upload_to_stage(self, data: Data):
-        pass
-
-    @abstractmethod
-    def load_from_stage(self):
-        pass
-
-    def register_extract_impl(self, func: ExtractImpl | type[ExtractImpl]):
-        if isinstance(func, type(ExtractImpl)):
-            self.extract_impl = func()
-        if isinstance(func, ExtractImpl):
-            self.extract_impl = func
-
-
 @dataclass
 class ExtractLoadJob(Serializable):
     job_id: str
@@ -347,7 +205,7 @@ class ExtractLoadJob(Serializable):
         return super().from_dict(data)
 
     @classmethod
-    def from_table(cls, table: ExtractTable, limit: int = 0) -> 'ExtractLoadJob':
+    def from_table(cls, table: RunnableTable, limit: int = 0) -> 'ExtractLoadJob':
         job_id = uuid.uuid4().hex
         return cls(
             job_id=job_id,
@@ -364,6 +222,7 @@ class ExtractLoadJob(Serializable):
                     schema_name=table.schema_name,
                     table_name=table.table_name,
                     task_number=task_number,
+                    options=table.base_options,
                     limit=limit,
                 ) for task_number in range(table.options.batches)
             ],
@@ -423,7 +282,7 @@ class ScheduleTask(BaseTask):
         if self.table_names:
             self.table_names = [table_name.lower() for table_name in self.table_names]
 
-    def __call__(self, warehouse: DbWarehouse) -> Schedule:
+    def __call__(self, warehouse: BaseWarehouse) -> Schedule:
 
         # Test Error for testing error handling
         if self.schema_names == ['error']:
@@ -439,7 +298,7 @@ class ScheduleTask(BaseTask):
                 )
             ])
 
-        tables: list[ExtractTable] = warehouse.filter(self.schema_names, self.table_names)
+        tables: list[RunnableTable] = warehouse.filter(self.schema_names, self.table_names)
         schedule = Schedule()
         for table in tables:
             if table.options.ignore:

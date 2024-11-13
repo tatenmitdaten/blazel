@@ -6,12 +6,12 @@ from typing import cast
 from typing import ClassVar
 from typing import TYPE_CHECKING
 
-from extractload.warehouse.base import TableType
-from extractload.warehouse.sf_csv import default_stage_suffix
-from extractload.warehouse.sf_csv import SnowflakeTable
-from extractload.warehouse.sf_csv import SnowflakeTableOverwrite
-from extractload.warehouse.sf_csv import SnowflakeTableUpsert
-from extractload.warehouse.sf_csv import SnowflakeWarehouse
+from blazel.base import BaseTableType
+from blazel.tables import default_stage_suffix
+from blazel.tables import SnowflakeTable
+from blazel.tables import SnowflakeTableOverwrite
+from blazel.tables import SnowflakeTableUpsert
+from blazel.tables import SnowflakeWarehouse
 
 if TYPE_CHECKING:
     import pyarrow  # type: ignore
@@ -20,7 +20,7 @@ logger = logging.getLogger()
 
 
 class SnowflakeWarehouseParquet(SnowflakeWarehouse):
-    def table_class(self, table_serialized: dict[str, dict | None]) -> type[TableType]:
+    def table_class(self, table_serialized: dict[str, dict | None]) -> type[BaseTableType]:
         options = table_serialized.get('options') or {}
 
         file_format = options.get('file_format', 'csv')
@@ -29,8 +29,8 @@ class SnowflakeWarehouseParquet(SnowflakeWarehouse):
 
         has_primary_key = options.get('primary_key') is not None
         if has_primary_key:
-            return cast(type[TableType], SnowflakeTableParquetUpsert)
-        return cast(type[TableType], SnowflakeTableParquetOverwrite)
+            return cast(type[BaseTableType], SnowflakeTableParquetUpsert)
+        return cast(type[BaseTableType], SnowflakeTableParquetOverwrite)
 
 
 class SnowflakeTableParquet(SnowflakeTable):
@@ -47,44 +47,44 @@ class SnowflakeTableParquet(SnowflakeTable):
 
     @property
     def parquet_schema(self) -> 'pyarrow.Schema':
-        pyarrow = self._import_pyarrow()
+        _pyarrow = self._import_pyarrow()
         pyarrow_fields = []
         for column in self:
             name = column.name.strip('"')
             if column.dtype == 'datetime':
-                pyarrow_field = pyarrow.field(name, pyarrow.timestamp('us'))
+                pyarrow_field = _pyarrow.field(name, _pyarrow.timestamp('us'))
             elif column.dtype == 'time':
-                pyarrow_field = pyarrow.field(name, pyarrow.time64('us'))
+                pyarrow_field = _pyarrow.field(name, _pyarrow.time64('us'))
             elif column.dtype == 'date':
-                pyarrow_field = pyarrow.field(name, pyarrow.date32())
+                pyarrow_field = _pyarrow.field(name, _pyarrow.date32())
             elif column.dtype == 'int':
-                pyarrow_field = pyarrow.field(name, pyarrow.int32())
+                pyarrow_field = _pyarrow.field(name, _pyarrow.int32())
             elif column.dtype == 'varchar':
-                pyarrow_field = pyarrow.field(name, pyarrow.string())
+                pyarrow_field = _pyarrow.field(name, _pyarrow.string())
             elif column.dtype == 'double':
-                pyarrow_field = pyarrow.field(name, pyarrow.float64())
+                pyarrow_field = _pyarrow.field(name, _pyarrow.float64())
             elif column.dtype.startswith('decimal'):
                 precision, scale = re.findall(r'\d+', column.dtype)
-                pyarrow_field = pyarrow.field(name, pyarrow.decimal128(int(precision), int(scale)))
+                pyarrow_field = _pyarrow.field(name, _pyarrow.decimal128(int(precision), int(scale)))
             else:
                 raise ValueError(f'Unknown datatype {column.dtype}')
             pyarrow_fields.append(pyarrow_field)
-        return pyarrow.schema(pyarrow_fields)
+        return _pyarrow.schema(pyarrow_fields)
 
     def get_key(self, file_number: int = 0, suffix='parquet') -> str:
         return super().get_key(file_number, suffix)
 
     def rows_to_bytes(self, rows: tuple[tuple, ...]) -> bytes:
-        pyarrow = self._import_pyarrow()
+        _pyarrow = self._import_pyarrow()
         with io.BytesIO() as buffer:
-            parquet_writer = pyarrow.parquet.ParquetWriter(buffer, self.parquet_schema)
+            parquet_writer = _pyarrow.parquet.ParquetWriter(buffer, self.parquet_schema)
             try:
                 # noinspection PyArgumentList
-                pyarrow_table = pyarrow.Table.from_arrays(
-                    arrays=[pyarrow.array(row) for row in zip(*rows)],
+                pyarrow_table = _pyarrow.Table.from_arrays(
+                    arrays=[_pyarrow.array(row) for row in zip(*rows)],
                     schema=self.parquet_schema
                 )
-            except pyarrow.lib.ArrowInvalid as e:
+            except _pyarrow.lib.ArrowInvalid as e:
                 logger.info(e)
                 raise
 

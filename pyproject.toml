@@ -3,7 +3,7 @@ requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "extractload"
+name = "blazel"
 authors = [
     { name = "Christian Schäfer", email = "christian.schaefer@tatenmitdaten.com" },
 ]
@@ -18,8 +18,8 @@ dependencies = [
     "boto3-stubs[s3,dynamodb,secretsmanager,lambda,stepfunctions]",
 ]
 
-[tool.setuptools]
-packages = ["extractload"]
+[tool.setuptools.packages.find]
+where = ["."]
 
 [project.optional-dependencies]
 dev = [
@@ -35,4 +35,4 @@ parquet = [
 ]
 
 [project.scripts]
-extractload = "extractload.cli:cli"
+blazel = "blazel.cli:cli"

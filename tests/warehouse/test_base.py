@@ -3,7 +3,7 @@ from itertools import product
 
 import pytest
 
-from extractload.clients import Env
+from blazel.clients import Env
 from warehouse.base import DbSchema
 from warehouse.base import DbTable
 from warehouse.base import DbWarehouse

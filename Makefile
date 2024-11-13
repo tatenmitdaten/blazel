@@ -1,4 +1,4 @@
-venv_path = $(VENV_PATH)/tatenmitdaten/packages/extractload
+venv_path = $(VENV_PATH)/tatenmitdaten/packages/blazel
 
 venv:
 	rm -rf $(venv_path)

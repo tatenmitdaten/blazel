@@ -1,19 +1,20 @@
-schema1:
-  table1:
+schema0:
+  table0:
+    f: extract.extract_column0
     columns:
-      location_id:
-        dtype: int
-        definition: '"LocationId"'
-      source:
+      column0:
         dtype: varchar
-        definition: '"Source"'
-  table2:
-    columns:
-      location_id: int
-      source: varchar
-
-schema2:
+        definition: '"Column0"'
+      column1:
+        dtype: datetime
+        definition: '"Column1"'
   table1:
     columns:
-      location_id: int
-      source: varchar
+      column0: varchar
+      column1: datetime
+
+schema1:
+  table0:
+    columns:
+      column0: varchar
+      column1: datetime

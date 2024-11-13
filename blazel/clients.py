@@ -8,8 +8,8 @@ from mypy_boto3_s3.service_resource import Bucket
 from mypy_boto3_secretsmanager import SecretsManagerClient
 from mypy_boto3_stepfunctions import SFNClient
 
-from extractload.config import Env
-from extractload.config import get_parameters
+from blazel.config import Env
+from blazel.config import get_parameters
 
 
 def get_s3_client() -> S3Client:

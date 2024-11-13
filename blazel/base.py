@@ -6,20 +6,23 @@ from pathlib import Path
 from typing import cast
 from typing import dataclass_transform
 from typing import Generic
+from typing import Iterable
 from typing import TypeVar
 
 import yaml
 
-from extractload.config import Env
+from blazel.config import Env
 
 database_name_prod = os.environ.get('DATABASE_NAME_PROD', 'sources')
 database_name_dev = os.environ.get('DATABASE_NAME_DEV', 'sources_dev')
 
-TableType = TypeVar('TableType', bound='DbTable')
+BaseTableType = TypeVar('BaseTableType', bound='BaseTable')
+BaseSchemaType = TypeVar('BaseSchemaType', bound='BaseSchema')
+BaseWarehouseType = TypeVar('BaseWarehouseType', bound='BaseWarehouse')
 
 
 @dataclass
-class DbColumn:
+class Column:
     name: str
     dtype: str
     definition: str | None = None
@@ -47,7 +50,7 @@ class DbColumn:
         return column
 
     @classmethod
-    def from_serialized(cls, column_name: str, column_serialized: dict | str) -> 'DbColumn':
+    def from_serialized(cls, column_name: str, column_serialized: dict | str) -> 'Column':
         if isinstance(column_serialized, str):
             return cls(
                 name=column_name,
@@ -78,20 +81,22 @@ class BaseOptions:
 
 
 @dataclass
-class DbTableOptions(BaseOptions):
+class TableOptions(BaseOptions):
     ignore: bool = False
     file_format: str = 'csv'
     primary_key: str | None = None
     source_name: str | None = None
+    where_clause: str | None = None
+    use_tunnel: bool = False
 
 
 @dataclass_transform()
 @dataclass
-class DbTable:
-    schema: 'DbSchema'
+class BaseTable:
+    schema: 'BaseSchema'
     table_name: str
-    columns: dict[str, DbColumn] = field(default_factory=dict)
-    options: DbTableOptions = field(default_factory=DbTableOptions)
+    columns: dict[str, Column] = field(default_factory=dict)
+    options: TableOptions = field(default_factory=TableOptions)
 
     def __iter__(self):
         return iter(self.columns.values())
@@ -125,19 +130,19 @@ class DbTable:
 
     @classmethod
     def from_serialized(
-            cls: type[TableType],
-            schema: 'DbSchema',
+            cls: type[BaseTableType],
+            schema: BaseSchemaType,
             table_name: str,
             table_serialized: dict[str, dict],
-    ) -> TableType:
+    ) -> BaseTableType:
         table = cls(
             schema=schema,
             table_name=table_name,
-            options=DbTableOptions(**table_serialized.get('options', {}))
+            options=TableOptions(**table_serialized.get('options', {}))
         )
         columns_serialized: dict[str, dict | str] = table_serialized['columns']
         for column_name, column_serialized in columns_serialized.items():
-            table.columns[column_name] = DbColumn.from_serialized(
+            table.columns[column_name] = Column.from_serialized(
                 column_name,
                 column_serialized
             )
@@ -145,21 +150,21 @@ class DbTable:
 
 
 @dataclass
-class DbSchema(Generic[TableType]):
-    warehouse: 'DbWarehouse'
+class BaseSchema(Generic[BaseTableType]):
+    warehouse: 'BaseWarehouse'
     schema_name: str
-    tables: dict[str, TableType] = field(default_factory=dict)
+    tables: dict[str, BaseTableType] = field(default_factory=dict)
 
-    def __iter__(self):
+    def __iter__(self) -> Iterable[BaseTableType]:
         return iter(self.tables.values())
 
-    def __getitem__(self, item):
+    def __getitem__(self, item) -> BaseTableType:
         try:
             return self.tables[item]
         except KeyError:
             raise KeyError(f'No table named {item}')
 
-    def filter(self, table_names: set[str] | list[str] | None = None) -> list[TableType]:
+    def filter(self, table_names: set[str] | list[str] | None = None) -> list[BaseTableType]:
         tables = []
         for table in self:
             if table_names is not None and table.table_name not in table_names:
@@ -174,13 +179,13 @@ class DbSchema(Generic[TableType]):
     @classmethod
     def from_serialized(
             cls,
-            warehouse: 'DbWarehouse',
+            warehouse: BaseWarehouseType,
             schema_name: str,
             schema_serialized: dict
-    ) -> 'DbSchema':
+    ) -> BaseSchemaType:
         schema = cls(warehouse=warehouse, schema_name=schema_name)
         for table_name, table_serialized in schema_serialized.items():
-            table_class: type[TableType] = warehouse.table_class(table_serialized)
+            table_class: type[BaseTableType] = warehouse.table_class(table_serialized)
             schema.tables[table_name] = table_class.from_serialized(
                 schema,
                 table_name,
@@ -190,14 +195,14 @@ class DbSchema(Generic[TableType]):
 
 
 @dataclass
-class DbWarehouse:
+class BaseWarehouse(Generic[BaseSchemaType, BaseTableType]):
     env: Env = Env.get()
-    schemas: dict[str, DbSchema] = field(default_factory=dict)
+    schemas: dict[str, BaseSchemaType] = field(default_factory=dict)
 
-    def __iter__(self):
+    def __iter__(self) -> Iterable[BaseSchemaType]:
         return iter(self.schemas.values())
 
-    def __getitem__(self, item):
+    def __getitem__(self, item) -> BaseSchemaType:
         try:
             return self.schemas[item]
         except KeyError:
@@ -209,15 +214,15 @@ class DbWarehouse:
             return database_name_prod
         return database_name_dev
 
-    def table_class(self, table_serialized: dict[str, dict | None]) -> type[TableType]:
-        return cast(type[TableType], DbTable)
+    def table_class(self, table_serialized: dict[str, dict | None]) -> type[BaseTableType]:
+        return cast(type[BaseTableType], BaseTable)
 
     def filter(
             self,
             schema_names: set[str] | list[str] | None = None,
             table_names: set[str] | list[str] | None = None
-    ) -> list[TableType]:
-        tables: list[TableType] = []
+    ) -> list[BaseTableType]:
+        tables: list[BaseTableType] = []
         for schema in self:
             if schema_names is not None and schema.schema_name not in schema_names:
                 continue
@@ -232,7 +237,7 @@ class DbWarehouse:
     def from_serialized(cls, warehouse_serialized: dict):
         warehouse = cls()
         for schema_name, schema_serialized in warehouse_serialized.items():
-            warehouse.schemas[schema_name] = DbSchema.from_serialized(
+            warehouse.schemas[schema_name] = BaseSchema.from_serialized(
                 warehouse,
                 schema_name,
                 schema_serialized,

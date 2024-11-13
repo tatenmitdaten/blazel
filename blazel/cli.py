@@ -8,11 +8,11 @@ import typer
 from rich import print
 from typer import Option
 
-from extractload.clients import get_stepfunctions_client
-from extractload.config import Env
-from extractload.warehouse.sf_csv import SnowflakeWarehouse
-from extractload.warehouse.tasks import ExtractLoadJob
-from extractload.warehouse.tasks import ScheduleTask
+from blazel.clients import get_stepfunctions_client
+from blazel.config import Env
+from blazel.tables import SnowflakeWarehouse
+from blazel.tasks import ExtractLoadJob
+from blazel.tasks import ScheduleTask
 
 cli = typer.Typer(
     pretty_exceptions_enable=False
@@ -31,13 +31,9 @@ class Modes(str, Enum):
     local = 'local'
 
 
-def get_warehouse(env: Env) -> SnowflakeWarehouse:
-    os.environ['APP_ENV'] = env.value
-    return SnowflakeWarehouse.from_yaml_file()
-
-
 def get_extract_load_job(schema: str, table: str, env: Env):
-    warehouse = get_warehouse(env)
+    global warehouse
+    warehouse.env = env
     return ExtractLoadJob.from_table(warehouse[schema][table])
 
 
@@ -90,7 +86,6 @@ def cli_schedule():
     """
     Print schedule for extract and load tasks to console for testing.
     """
-    warehouse = get_warehouse(Env.dev)
     schedule = ScheduleTask(database_name='sources')(warehouse)
     print(schedule.as_dict)
 
@@ -106,7 +101,6 @@ def cli_run(
     """
     Run extract and load tasks. If no schema and table are provided, all tasks will be executed.
     """
-    warehouse = get_warehouse(env)
     schedule_task = ScheduleTask(
         database_name=warehouse.database_name,
         schema_names=schema,
@@ -115,10 +109,10 @@ def cli_run(
     )
     if mode == Modes.local:
         for job in schedule_task(warehouse).schedule:
-            job.clean()
+            job.clean(warehouse)
             for task in job.extract:
                 task(warehouse)
-            job.load()
+            job.load(warehouse)
     else:
         aws_account_id = os.environ.get('AWS_ACCOUNT_ID')
         extract_load_arn = f'arn:aws:states:eu-central-1:{aws_account_id}:stateMachine:ExtractLoadJobQueue-{env.value}'
@@ -139,10 +133,11 @@ def cli_tables(
     """
     Create tables in Snowflake according to src/extractload-pkg/tables.yaml.
     """
-    warehouse = SnowflakeWarehouse.from_yaml_file()
     warehouse.env = env
     warehouse.create_tables(schema_names=schema, table_names=table, overwrite=overwrite, save_files=True)
 
+
+warehouse = SnowflakeWarehouse.from_yaml_file()
 
 if __name__ == '__main__':
     cli()
