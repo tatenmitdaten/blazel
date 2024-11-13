@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from blazel.base import BaseTableType
 from blazel.tables import default_stage_suffix
+from blazel.tables import INDENT
 from blazel.tables import SnowflakeTable
 from blazel.tables import SnowflakeTableOverwrite
 from blazel.tables import SnowflakeTableUpsert
@@ -109,7 +110,7 @@ class SnowflakeTableParquet(SnowflakeTable):
         )
         FILE_FORMAT = (
             TYPE = 'parquet'
-        )"""
+        )""".replace(INDENT, '')
 
 
 class SnowflakeTableParquetOverwrite(SnowflakeTableParquet, SnowflakeTableOverwrite):

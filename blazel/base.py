@@ -8,10 +8,12 @@ from typing import dataclass_transform
 from typing import Generic
 from typing import Iterator
 from typing import TypeVar
+import logging
 
 import yaml
 
 from blazel.config import Env
+
 
 database_name_prod = os.environ.get('DATABASE_NAME_PROD', 'sources')
 database_name_dev = os.environ.get('DATABASE_NAME_DEV', 'sources_dev')
@@ -247,13 +249,16 @@ class BaseWarehouse(Generic[BaseWarehouseType, BaseSchemaType, BaseTableType]):
 
     @classmethod
     def from_yaml_file(cls: type[BaseWarehouseType], file: Path | str | None = None) -> BaseWarehouseType:
-        file = file or os.environ.get('TABLES_YAML_PATH')
-        if file is None:
-            raise ValueError('No warehouse definition file provided')
         if isinstance(file, str):
             file = Path(file)
+        if file is None:
+            if 'TABLES_YAML_PATH' in os.environ:
+                file = Path(os.environ['TABLES_YAML_PATH'])
+            else:
+                file = Path('/var/task/tables.yaml')
+            logging.getLogger().info(f'Using table definition file "{file.absolute()}"')
         if not file.exists():
-            raise FileNotFoundError(f'Warehouse definition file not found: {file.absolute()}')
+            raise FileNotFoundError(f'File "{file.absolute()}" not found. Cannot read table definitions.')
         with file.open() as f:
             yaml_str = f.read()
         return cls.from_yaml(yaml_str)

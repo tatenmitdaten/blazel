@@ -8,9 +8,9 @@ from abc import abstractmethod
 from dataclasses import dataclass
 from dataclasses import field
 from typing import Callable
-from typing import ClassVar
 from typing import Generator
 from typing import Generic
+from typing import Iterator
 from typing import TypeVar
 
 from blazel.base import BaseOptions
@@ -21,36 +21,36 @@ from blazel.clients import get_extract_time_table
 from blazel.clients import get_job_table
 from blazel.clients import get_task_table
 from blazel.config import default_timestamp_format
-from blazel.serializable import SerializableType
 from blazel.serializable import Serializable
+from blazel.serializable import SerializableType
 
 logger = logging.getLogger()
 
 DictRow = dict[str, object]
 Data = Generator[DictRow, None, None] | list[DictRow]
-RunnableTaskType = TypeVar('RunnableTaskType', bound='RunnableTask')
+TableTaskType = TypeVar('TableTaskType', bound='TableTask')
 BaseTaskType = TypeVar('BaseTaskType', bound='BaseTask')
 ExtractTaskType = TypeVar('ExtractTaskType', bound='ExtractTask')
-RunnableTableType = TypeVar('RunnableTableType', bound='RunnableTable')
-RunnableSchemaType = TypeVar('RunnableSchemaType', bound='RunnableSchema')
-RunnableWarehouseType = TypeVar('RunnableWarehouseType', bound='RunnableWarehouse')
-ExtractFunctionType = Callable[[RunnableTableType, RunnableTaskType], Data]
+ExtractLoadTableType = TypeVar('ExtractLoadTableType', bound='ExtractLoadTable')
+ExtractLoadSchemaType = TypeVar('ExtractLoadSchemaType', bound='ExtractLoadSchema')
+ExtractLoadWarehouseType = TypeVar('ExtractLoadWarehouseType', bound='ExtractLoadWarehouse')
+ExtractFunctionType = Callable[[ExtractLoadTableType, TableTaskType], Data]
 
 
 @dataclass
-class RunnableTable(
+class ExtractLoadTable(
     ABC,
-    BaseTable[RunnableSchemaType, RunnableTableType],
-    Generic[RunnableSchemaType, RunnableTableType, RunnableTaskType]
+    BaseTable[ExtractLoadSchemaType, ExtractLoadTableType],
+    Generic[ExtractLoadSchemaType, ExtractLoadTableType, TableTaskType]
 ):
     extract_function: ExtractFunctionType | None = None
 
     @abstractmethod
-    def clean_stage(self):
+    def clean_stage(self) -> dict | None:
         pass
 
     @abstractmethod
-    def load_from_stage(self):
+    def load_from_stage(self) -> dict | None:
         pass
 
     @abstractmethod
@@ -61,21 +61,21 @@ class RunnableTable(
         self.extract_function = f
 
 
-class RunnableSchema(BaseSchema[RunnableWarehouseType, RunnableSchemaType, RunnableTableType]):
+class ExtractLoadSchema(BaseSchema[ExtractLoadWarehouseType, ExtractLoadSchemaType, ExtractLoadTableType]):
     pass
 
 
-class RunnableWarehouse(BaseWarehouse[RunnableWarehouseType, RunnableSchemaType, RunnableTableType]):
-
-    def run_task(self, task: RunnableTaskType):
-        table = self[task.schema_name][task.table_name]
-        return task(table)
+class ExtractLoadWarehouse(BaseWarehouse[ExtractLoadWarehouseType, ExtractLoadSchemaType, ExtractLoadTableType]):
+    pass
 
 
 @dataclass
-class BaseTask(Serializable):
-    task_type: ClassVar[str] = field(default="BaseTask", init=False)
+class BaseTask(Serializable, Generic[ExtractLoadWarehouseType]):
+    task_type: str = field(default="BaseTask", init=False)
     task_id: str = field(default_factory=lambda: uuid.uuid4().hex, init=False)
+
+    def __call__(self, warehouse: ExtractLoadWarehouseType) -> dict | None:
+        raise NotImplementedError
 
     @property
     def as_dict(self) -> dict:
@@ -85,15 +85,12 @@ class BaseTask(Serializable):
 
 
 @dataclass
-class RunnableTask(BaseTask):
-    task_type: ClassVar[str] = field(default="RunnableTask", init=False)
+class TableTask(BaseTask[ExtractLoadWarehouseType], Generic[ExtractLoadWarehouseType, ExtractLoadTableType]):
+    task_type: str = field(default="TableTask", init=False)
     job_id: str | None = None
     database_name: str | None = None
     schema_name: str | None = None
     table_name: str | None = None
-
-    def __call__(self, table: RunnableTableType):
-        raise NotImplementedError
 
     def __post_init__(self):
         if self.job_id is None:
@@ -112,49 +109,53 @@ class RunnableTask(BaseTask):
     def table_uri(self) -> str:
         return f'{self.database_name}.{self.schema_name}.{self.table_name}'
 
+    def table(self, warehouse: ExtractLoadWarehouseType) -> ExtractLoadTableType:
+        return warehouse[self.schema_name][self.table_name]
+
     def to_dynamodb(self):
         get_task_table().put_item(Item=self.as_dict)
 
     @classmethod
-    def from_dynamodb(cls: type[RunnableTaskType], task_id) -> RunnableTaskType:
+    def from_dynamodb(cls: type[TableTaskType], task_id) -> TableTaskType:
         task_dict = get_task_table().get_item(Key={'task_id': task_id})
         return cls.from_dict(task_dict['Item'])
 
 
 @dataclass
-class ErrorTask(RunnableTask):
-    task_type: ClassVar[str] = field(default="ErrorTask", init=False)
+class ErrorTask(TableTask):
+    task_type: str = field(default="ErrorTask", init=False)
 
-    def __call__(self, table: RunnableTableType):
+    def __call__(self, warehouse: ExtractLoadWarehouseType) -> dict | None:
         raise RuntimeError('Test Error')
 
 
 @dataclass
-class CleanTask(RunnableTask):
-    task_type: ClassVar[str] = field(default="CleanTask", init=False)
+class CleanTask(TableTask):
+    task_type: str = field(default="CleanTask", init=False)
 
-    def __call__(self, table: RunnableTableType):
-        return table.clean_stage()
-
-
-@dataclass
-class LoadTask(RunnableTask):
-    task_type: ClassVar[str] = field(default="LoadTask", init=False)
-
-    def __call__(self, table: RunnableTableType):
-        return table.load_from_stage()
+    def __call__(self, warehouse: ExtractLoadWarehouseType) -> dict | None:
+        return self.table(warehouse).clean_stage()
 
 
 @dataclass
-class ExtractTask(RunnableTask):
-    task_type: ClassVar[str] = field(default="ExtractTask", init=False)
+class LoadTask(TableTask):
+    task_type: str = field(default="LoadTask", init=False)
+
+    def __call__(self, warehouse: ExtractLoadWarehouseType) -> dict | None:
+        return self.table(warehouse).load_from_stage()
+
+
+@dataclass
+class ExtractTask(TableTask):
+    task_type: str = field(default="ExtractTask", init=False)
     task_number: int = 0
     start: str | None = None
     end: str | None = None
     options: BaseOptions = field(default_factory=BaseOptions)
     limit: int = 0
 
-    def __call__(self, table: RunnableTableType):
+    def __call__(self, warehouse: ExtractLoadWarehouseType):
+        table = self.table(warehouse)
         if table.extract_function is None:
             raise ValueError(f'No extract function registered for table {self.table_uri}')
         return table.extract_function(table, self)
@@ -208,7 +209,7 @@ class ExtractLoadJob(Serializable):
         return super().from_dict(data)
 
     @classmethod
-    def from_table(cls, table: RunnableTable, limit: int = 0) -> 'ExtractLoadJob':
+    def from_table(cls, table: ExtractLoadTable, limit: int = 0) -> 'ExtractLoadJob':
         job_id = uuid.uuid4().hex
         return cls(
             job_id=job_id,
@@ -268,10 +269,36 @@ class ExtractLoadJob(Serializable):
 class Schedule(Serializable):
     schedule: list[ExtractLoadJob] = field(default_factory=list)
 
+    def __iter__(self) -> Iterator[ExtractLoadJob]:
+        return iter(self.schedule)
+
+    @classmethod
+    def error_schedule(cls) -> 'Schedule':
+        error_task = ErrorTask()
+        return Schedule(schedule=[
+            ExtractLoadJob(
+                job_id=uuid.uuid4().hex,
+                clean=error_task,
+                extract=[error_task],
+                load=error_task
+            )
+        ])
+
+    @classmethod
+    def from_tables(cls, tables: list[ExtractLoadTableType], limit: int = 0) -> 'Schedule':
+        schedule = Schedule()
+        for table in tables:
+            if table.options.ignore:
+                continue
+            schedule.schedule.append(
+                ExtractLoadJob.from_table(table, limit=limit)
+            )
+        return schedule
+
 
 @dataclass
-class ScheduleTask(BaseTask):
-    task_type: ClassVar[str] = field(default="ScheduleTask", init=False)
+class ScheduleTask(BaseTask[ExtractLoadWarehouseType]):
+    task_type: str = field(default="ScheduleTask", init=False)
     database_name: str | None = None
     schema_names: list[str] | None = None
     table_names: list[str] | None = None
@@ -285,31 +312,17 @@ class ScheduleTask(BaseTask):
         if self.table_names:
             self.table_names = [table_name.lower() for table_name in self.table_names]
 
-    def __call__(self, warehouse: BaseWarehouse) -> Schedule:
+    def __call__(self, warehouse: ExtractLoadWarehouseType) -> dict | None:
 
         # Test Error for testing error handling
         if self.schema_names == ['error']:
             raise RuntimeError('Test Error')
-        if self.table_names == ['error']:
-            error_task = ErrorTask()
-            return Schedule(schedule=[
-                ExtractLoadJob(
-                    job_id=uuid.uuid4().hex,
-                    clean=error_task,
-                    extract=[error_task],
-                    load=error_task
-                )
-            ])
-
-        tables: list[RunnableTable] = warehouse.filter(self.schema_names, self.table_names)
-        schedule = Schedule()
-        for table in tables:
-            if table.options.ignore:
-                continue
-            schedule.schedule.append(
-                ExtractLoadJob.from_table(table, limit=self.limit)
-            )
-        return schedule
+        elif self.table_names == ['error']:
+            schedule = Schedule.error_schedule()
+        else:
+            tables = warehouse.filter(self.schema_names, self.table_names)
+            schedule = Schedule.from_tables(tables, limit=self.limit)
+        return schedule.as_dict
 
 
 class TaskFactory(Generic[BaseTaskType]):

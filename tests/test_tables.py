@@ -54,7 +54,7 @@ def test_snowflake_table_classes(schema):
 
 
 def test_snowflake_load_stmt_csv_overwrite(schema):
-    assert schema['table_csv_overwrite'].load_stmt() == """\
+    assert schema['table_csv_overwrite'].load_stmt_str() == """\
 TRUNCATE TABLE IF EXISTS sources_dev.schema0.table_csv_overwrite;
 COPY INTO sources_dev.schema0.table_csv_overwrite (column0, column1)
 FROM @sources_dev.public.stage/schema0/table_csv_overwrite/
@@ -71,7 +71,7 @@ UPDATE sources_dev.schema0.table_csv_overwrite SET load_date='2024-01-01 00:00:0
 
 
 def test_snowflake_load_stmt_table_csv_upsert(schema):
-    assert schema['table_csv_upsert'].load_stmt() == """\
+    assert schema['table_csv_upsert'].load_stmt_str() == """\
 DROP TABLE IF EXISTS sources_dev.schema0.table_csv_upsert_stage;
 CREATE TABLE sources_dev.schema0.table_csv_upsert_stage LIKE sources_dev.schema0.table_csv_upsert;
 COPY INTO sources_dev.schema0.table_csv_upsert_stage (column0, column1)
@@ -93,7 +93,6 @@ INSERT INTO sources_dev.schema0.table_csv_upsert SELECT * FROM sources_dev.schem
 def test_create_table_stmt(table0):
     assert table0.create_table_stmt() == """\
 DROP TABLE IF EXISTS sources_dev.schema0.table0;
-
 CREATE TABLE sources_dev.schema0.table0 (
     column0 VARCHAR,
     column1 DATETIME,
@@ -150,8 +149,8 @@ def test_upload_to_stage(caplog, snowflake_bucket, table0, data):
     with caplog.at_level(logging.INFO):
         table0.upload_to_stage(data, chunk_size=1)
     line1, line2, line3 = caplog.text.strip().split('\n')
-    assert line1.endswith('Uploaded 36 bytes to s3://snowflake-staging-bucket-dev/schema0/table0/file_00.csv.gz')
-    assert line2.endswith('Uploaded 36 bytes to s3://snowflake-staging-bucket-dev/schema0/table0/file_01.csv.gz')
+    assert line1.endswith('Uploaded 36 bytes (1 rows) to s3://snowflake-staging-bucket-dev/schema0/table0/file_00.csv.gz')
+    assert line2.endswith('Uploaded 36 bytes (1 rows) to s3://snowflake-staging-bucket-dev/schema0/table0/file_01.csv.gz')
     assert line3.endswith('Uploaded 2 rows to stage')
 
 

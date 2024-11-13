@@ -37,9 +37,13 @@ class Serializable:
                 default = f.default_factory()
 
             value = getattr(self, f.name)
-            if value != default:
+            if value != default or not f.init:
                 obj_dict[f.name] = _as_dict(value)
         return obj_dict
+
+    @property
+    def as_json(self) -> str:
+        return json.dumps(self.as_dict, default=str)
 
     @classmethod
     def from_dict(cls: type[SerializableType], data: dict) -> SerializableType:

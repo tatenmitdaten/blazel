@@ -5,7 +5,7 @@ from blazel.tables import SnowflakeTable
 from blazel.tables import SnowflakeWarehouse
 from blazel.tasks import ExtractLoadJob
 from blazel.tasks import ExtractTask
-from blazel.tasks import RunnableTable
+from blazel.tasks import ExtractLoadTable
 from blazel.tasks import ScheduleTask
 
 
@@ -106,7 +106,7 @@ def test_persist_job(job_table, task_table, warehouse, parameters):
 
 
 def test_register_extract_simple(warehouse):
-    def extract(rt: RunnableTable, et: ExtractTask):
+    def extract(rt: ExtractLoadTable, et: ExtractTask):
         print(rt.table_uri)
         print(et.job_id)
         return 'test'
@@ -120,4 +120,4 @@ def test_register_extract_simple(warehouse):
         schema_name='schema0',
         table_name='table0',
     )
-    assert warehouse.run_task(task) == 'test'
+    assert task(warehouse) == 'test'

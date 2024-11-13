@@ -15,8 +15,8 @@ test:
 	$(venv_path)/bin/pytest -W "ignore::DeprecationWarning"
 
 check:
-	$(venv_path)/bin/flake8 "blazel" --ignore=E501
-	$(venv_path)/bin/mypy "blazel" --check-untyped-defs --python-executable $(venv_path)/bin/python
+	$(venv_path)/bin/flake8 blazel --ignore=E501
+	$(venv_path)/bin/mypy blazel --check-untyped-defs --python-executable $(venv_path)/bin/python
 
 lock:
 	$(venv_path)/bin/pip-compile --upgrade --strip-extras --build-isolation \

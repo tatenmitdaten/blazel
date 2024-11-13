@@ -63,7 +63,7 @@ def test_snowflake_table_classes(schema):
 
 
 def test_snowflake_load_stmt_parquet_overwrite(schema):
-    assert schema['table_parquet_overwrite'].load_stmt() == """\
+    assert schema['table_parquet_overwrite'].load_stmt_str() == """\
 TRUNCATE TABLE IF EXISTS sources_dev.schema0.table_parquet_overwrite;
 COPY INTO sources_dev.schema0.table_parquet_overwrite (column0, column1) FROM (
     SELECT
@@ -78,7 +78,7 @@ UPDATE sources_dev.schema0.table_parquet_overwrite SET load_date='2024-01-01 00:
 
 
 def test_snowflake_load_stmt_table_parquet_upsert(schema):
-    assert schema['table_parquet_upsert'].load_stmt() == """\
+    assert schema['table_parquet_upsert'].load_stmt_str() == """\
 DROP TABLE IF EXISTS sources_dev.schema0.table_parquet_upsert_stage;
 CREATE TABLE sources_dev.schema0.table_parquet_upsert_stage LIKE sources_dev.schema0.table_parquet_upsert;
 COPY INTO sources_dev.schema0.table_parquet_upsert_stage (column0, column1) FROM (

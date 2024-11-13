@@ -4,6 +4,7 @@ import gzip
 import io
 import logging
 from dataclasses import field
+from enum import Enum
 from itertools import batched
 from pathlib import Path
 from typing import cast
@@ -23,18 +24,21 @@ from blazel.clients import get_snowflake_staging_bucket
 from blazel.config import default_timestamp_format
 from blazel.config import default_timezone
 from blazel.tasks import Data
-from blazel.tasks import RunnableSchema
-from blazel.tasks import RunnableTable
-from blazel.tasks import RunnableTaskType
-from blazel.tasks import RunnableWarehouse
+from blazel.tasks import ExtractLoadSchema
+from blazel.tasks import ExtractLoadTable
+from blazel.tasks import TableTaskType
+from blazel.tasks import ExtractLoadWarehouse
 
 logger = logging.getLogger()
+logging.getLogger('snowflake.connector').setLevel(logging.WARNING)
 
 default_stage_suffix = '_stage'
 
 SnowflakeTableType = TypeVar('SnowflakeTableType', bound='SnowflakeTable')
 SnowflakeSchemaType = TypeVar('SnowflakeSchemaType', bound='SnowflakeSchema')
 SnowflakeWarehouseType = TypeVar('SnowflakeWarehouseType', bound='SnowflakeWarehouse')
+
+INDENT = 8 * ' '
 
 
 def get_private_key_bytes(private_key_pem_string: str) -> bytes:
@@ -65,7 +69,17 @@ def get_snowflake_connection(database: str) -> SnowflakeConnection:
     )
 
 
-class SnowflakeTable(RunnableTable[SnowflakeSchemaType, SnowflakeTableType, RunnableTaskType]):
+class SQL(Enum):
+    drop = 'DROP'
+    create = 'CREATE'
+    truncate = 'TRUNCATE'
+    delete = 'DELETE'
+    copy = 'COPY'
+    update = 'UPDATE'
+    insert = 'INSERT'
+
+
+class SnowflakeTable(ExtractLoadTable[SnowflakeSchemaType, SnowflakeTableType, TableTaskType]):
 
     def create_table_stmt(self) -> str:
         def f_comment(comment: str | None) -> str:
@@ -76,10 +90,10 @@ class SnowflakeTable(RunnableTable[SnowflakeSchemaType, SnowflakeTableType, Runn
             [f'{indent}{column.name} {column.dtype.upper()}{f_comment(column.comment)}'
              for column in self] + [f'{indent}load_date DATETIME']
         )
-        return f"DROP TABLE IF EXISTS {self.table_uri};\n\n" \
+        return f"DROP TABLE IF EXISTS {self.table_uri};\n" \
                f"CREATE TABLE {self.table_uri} (\n{columns}\n)"
 
-    def clean_stage(self):
+    def clean_stage(self) -> dict | None:
         prefix = f'{self.schema_name}/{self.table_name}/'
         objects, counter = [], 0
         bucket = get_snowflake_staging_bucket()
@@ -93,6 +107,7 @@ class SnowflakeTable(RunnableTable[SnowflakeSchemaType, SnowflakeTableType, Runn
             bucket.delete_objects(Delete={'Objects': objects})  # type: ignore
         path = f's3://{bucket.name}/{prefix}'
         logger.info(f'Deleted {counter} file(s) from {path}')
+        return None
 
     def get_key(self, file_number: int = 0, suffix: str = 'csv.gz') -> str:
         file_name = f'file_{file_number:02d}.{suffix}'
@@ -128,13 +143,21 @@ class SnowflakeTable(RunnableTable[SnowflakeSchemaType, SnowflakeTableType, Runn
             SKIP_BLANK_LINES = TRUE
             TRIM_SPACE = TRUE,
             FIELD_OPTIONALLY_ENCLOSED_BY = '"'
-        )"""
+        )""".replace(INDENT, '')
 
     def get_rows(self, data: Data) -> Generator[tuple, None, None]:
         for row in data:
             yield tuple(row.get(column.name) for column in self)
 
     def upload_to_stage(self, data: Data, chunk_size: int = 500_000):
+        def human_readable_size(obj: bytes) -> str:
+            len_bytes = len(obj)
+            if len_bytes < 1024:
+                return f'{len_bytes} bytes'
+            if len_bytes < 1024 ** 2:
+                return f'{len_bytes / 1024:.2f} Kb'
+            return f'{len_bytes / 1024 ** 2:.2f} Mb'
+
         total_rows = 0
         bucket = get_snowflake_staging_bucket()
         rows = self.get_rows(data)
@@ -143,7 +166,7 @@ class SnowflakeTable(RunnableTable[SnowflakeSchemaType, SnowflakeTableType, Runn
             key = self.get_key(file_number)
             body = self.rows_to_bytes(batch)
             bucket.put_object(Body=body, Key=key)
-            logger.info(f'Uploaded {len(body)} bytes to s3://{bucket.name}/{key}')
+            logger.info(f'Uploaded {human_readable_size(body)} ({len(batch)} rows) to s3://{bucket.name}/{key}')
         logger.info(f'Uploaded {total_rows} rows to stage')
 
     @staticmethod
@@ -155,15 +178,21 @@ class SnowflakeTable(RunnableTable[SnowflakeSchemaType, SnowflakeTableType, Runn
             raise ValueError(f'Invalid suffix: {suffix}')
 
         return f"""\
-        UPDATE {self.table_uri}{suffix} SET load_date='{self.get_now_timestamp()}'"""
+        UPDATE {self.table_uri}{suffix} SET load_date='{self.get_now_timestamp()}'""".replace(INDENT, '')
 
-    def staging_table_stmt(self) -> str:
+    def drop_staging_table_stmt(self) -> str:
         return f"""\
-        DROP TABLE IF EXISTS {self.table_uri}{default_stage_suffix};
-        CREATE TABLE {self.table_uri}{default_stage_suffix} LIKE {self.table_uri}"""
+        DROP TABLE IF EXISTS {self.table_uri}{default_stage_suffix}""".replace(INDENT, '')
 
-    def load_stmt(self) -> str:
+    def create_staging_table_stmt(self) -> str:
+        return f"""\
+        CREATE TABLE {self.table_uri}{default_stage_suffix} LIKE {self.table_uri}""".replace(INDENT, '')
+
+    def load_stmt(self) -> dict[SQL, str]:
         raise NotImplementedError
+
+    def load_stmt_str(self) -> str:
+        return ';\n'.join(self.load_stmt().values())
 
     def save_latest_timestamp(self, latest_timestamp: str):
         if self.options.timestamp_field is None:
@@ -177,61 +206,76 @@ class SnowflakeTable(RunnableTable[SnowflakeSchemaType, SnowflakeTableType, Runn
         )
         logger.info(f'Set latest timestamp {self.options.timestamp_field}={latest_timestamp} for {self.table_uri}')
 
-    def load_from_stage(self):
+    def load_from_stage(self) -> dict | None:
         """
         Load data from Snowflake stage into target table.
         """
         with get_snowflake_connection(self.database_name) as snowflake_conn:
             logger.info(f'Connected to Snowflake account {snowflake_conn.account}.')
             with snowflake_conn.cursor() as snowflake_cursor:
-                for stmt in self.load_stmt().split(';\n'):
-                    if stmt.strip():
-                        logger.info(stmt)
-                        snowflake_cursor.execute(stmt)
-                results = [row[0] for row in snowflake_cursor.fetchall()]
-                logger.info(f'Loaded {results} rows into "{self.table_uri}" in parallel')
+                for cmd_type, stmt in self.load_stmt().items():
+                    logger.info(stmt)
+                    snowflake_cursor.execute(stmt)
+                    results = [row for row in snowflake_cursor.fetchall()]
+                    if results:
+                        match cmd_type:
+                            case SQL.drop | SQL.create | SQL.truncate:
+                                logger.info(f'{cmd_type.value}: {results[0][0]}')
+                            case SQL.update | SQL.insert | SQL.delete:
+                                logger.info(f'{cmd_type.value}: {results[0][0]} rows affected.')
+                            case SQL.copy:
+                                for row in results:
+                                    msg = 'file: {}, status: {}, parsed {}, loaded {}'.format(*row[:4])
+                                    logger.info(f'{cmd_type.value}: {msg}')
                 if self.options.timestamp_field:
                     snowflake_cursor.execute(f'SELECT MAX({self.options.timestamp_field}) FROM {self.table_uri}')
                     result: tuple = snowflake_cursor.fetchone()  # type: ignore
                     self.save_latest_timestamp(result[0])
+        return None
 
 
 class SnowflakeTableOverwrite(SnowflakeTable):
     def truncate_table_stmt(self) -> str:
         return f"""\
-        TRUNCATE TABLE IF EXISTS {self.table_uri}"""
+        TRUNCATE TABLE IF EXISTS {self.table_uri}""".replace(INDENT, '')
 
-    def load_stmt(self) -> str:
-        logger.info(f'Replace warehouse_serialized in {self.table_uri}...')
-        return ';\n'.join([
-            self.truncate_table_stmt(),
-            self.copy_table_stmt(),
-            self.update_load_date_stmt(),
-        ]).replace(8 * ' ', '')
+    def load_stmt(self) -> dict[SQL, str]:
+        logger.info(f'Overwrite {self.table_uri}...')
+        return {
+            SQL.truncate: self.truncate_table_stmt(),
+            SQL.copy: self.copy_table_stmt(),
+            SQL.update: self.update_load_date_stmt(),
+        }
 
 
 class SnowflakeTableUpsert(SnowflakeTable):
 
-    def delete_append_table_stmt(self) -> str:
+    def delete_from_table_stmt(self) -> str:
         return f"""\
-        DELETE FROM {self.table_uri} WHERE {self.options.primary_key} IN (SELECT {self.options.primary_key} FROM {self.table_uri}{default_stage_suffix});
-        INSERT INTO {self.table_uri} SELECT * FROM {self.table_uri}{default_stage_suffix}"""
+        DELETE FROM {self.table_uri} WHERE {self.options.primary_key} IN (SELECT {self.options.primary_key} FROM {self.table_uri}{default_stage_suffix})""".replace(
+            INDENT, '')
 
-    def load_stmt(self) -> str:
-        logger.info(f'Merging into {self.table_uri} using primary key {self.options.primary_key}...')
-        return ';\n'.join([
-            self.staging_table_stmt(),
-            self.copy_table_stmt(default_stage_suffix),
-            self.update_load_date_stmt(default_stage_suffix),
-            self.delete_append_table_stmt(),
-        ]).replace(8 * ' ', '')
+    def insert_into_table_stmt(self) -> str:
+        return f"""\
+        INSERT INTO {self.table_uri} SELECT * FROM {self.table_uri}{default_stage_suffix}""".replace(INDENT, '')
+
+    def load_stmt(self) -> dict[SQL, str]:
+        logger.info(f'Upsert {self.table_uri} using primary key {self.options.primary_key}...')
+        return {
+            SQL.drop: self.drop_staging_table_stmt(),
+            SQL.create: self.create_staging_table_stmt(),
+            SQL.copy: self.copy_table_stmt(default_stage_suffix),
+            SQL.update: self.update_load_date_stmt(default_stage_suffix),
+            SQL.delete: self.delete_from_table_stmt(),
+            SQL.insert: self.insert_into_table_stmt(),
+        }
 
 
-class SnowflakeSchema(RunnableSchema[SnowflakeWarehouseType, SnowflakeSchemaType, SnowflakeTableType]):
+class SnowflakeSchema(ExtractLoadSchema[SnowflakeWarehouseType, SnowflakeSchemaType, SnowflakeTableType]):
     pass
 
 
-class SnowflakeWarehouse(RunnableWarehouse[SnowflakeWarehouseType, SnowflakeSchemaType, SnowflakeTableType]):
+class SnowflakeWarehouse(ExtractLoadWarehouse[SnowflakeWarehouseType, SnowflakeSchemaType, SnowflakeTableType]):
     schemas: dict[str, SnowflakeSchemaType] = field(default_factory=dict)
 
     def table_class(self, table_serialized: dict[str, dict | None]) -> type[SnowflakeTableType]:
