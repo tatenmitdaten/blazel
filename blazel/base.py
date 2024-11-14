@@ -1,3 +1,4 @@
+import logging
 import os
 from dataclasses import dataclass
 from dataclasses import field
@@ -8,19 +9,21 @@ from typing import dataclass_transform
 from typing import Generic
 from typing import Iterator
 from typing import TypeVar
-import logging
 
 import yaml
 
 from blazel.config import Env
 
+BaseTableType = TypeVar('BaseTableType', bound='BaseTable')
+BaseSchemaType = TypeVar('BaseSchemaType', bound='BaseSchema')
+BaseWarehouseType = TypeVar('BaseWarehouseType', bound='BaseWarehouse')
 
 database_name_prod = os.environ.get('DATABASE_NAME_PROD', 'sources')
 database_name_dev = os.environ.get('DATABASE_NAME_DEV', 'sources_dev')
 
-BaseTableType = TypeVar('BaseTableType', bound='BaseTable')
-BaseSchemaType = TypeVar('BaseSchemaType', bound='BaseSchema')
-BaseWarehouseType = TypeVar('BaseWarehouseType', bound='BaseWarehouse')
+
+def get_database_name():
+    return database_name_prod if Env.is_prod() else database_name_dev
 
 
 @dataclass
@@ -199,7 +202,6 @@ class BaseSchema(Generic[BaseWarehouseType, BaseSchemaType, BaseTableType]):
 
 @dataclass
 class BaseWarehouse(Generic[BaseWarehouseType, BaseSchemaType, BaseTableType]):
-    env: Env = Env.get()
     schemas: dict[str, BaseSchemaType] = field(default_factory=dict[str, BaseSchemaType])
 
     def __iter__(self) -> Iterator[BaseSchemaType]:
@@ -213,9 +215,7 @@ class BaseWarehouse(Generic[BaseWarehouseType, BaseSchemaType, BaseTableType]):
 
     @property
     def database_name(self) -> str:
-        if self.env == Env.prod:
-            return database_name_prod
-        return database_name_dev
+        return get_database_name()
 
     def table_class(self, table_serialized: dict[str, dict | None]) -> type[BaseTableType]:
         return cast(type[BaseTableType], BaseTable)

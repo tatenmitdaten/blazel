@@ -21,11 +21,15 @@ class Env(str, Enum):
 
     @staticmethod
     def get() -> 'Env':
-        env = os.getenv('APP_ENV', 'dev')
-        try:
-            return Env(env)
-        except ValueError:
-            raise ValueError(f"Invalid environment '{env}'. Must be one of: {[str(e) for e in Env]}")
+        return Env(os.getenv('APP_ENV', 'dev'))
+
+    @staticmethod
+    def set(env: str):
+        os.environ['APP_ENV'] = Env(env).value
+
+    @staticmethod
+    def is_prod() -> bool:
+        return Env.get() == Env.prod
 
 
 @lru_cache

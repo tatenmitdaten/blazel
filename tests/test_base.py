@@ -79,9 +79,13 @@ def warehouse_yaml_file(warehouse_yaml, tmp_path_factory):
 
 def test_warehouse_env(warehouse_dict):
     wh = BaseWarehouse.from_serialized({})
-    assert wh.database_name == 'sources_dev'
-    wh.env = Env.prod
-    assert wh.database_name == 'sources'
+    try:
+        Env.set('dev')
+        assert wh.database_name == 'sources_dev'
+        Env.set('prod')
+        assert wh.database_name == 'sources'
+    finally:
+        del os.environ['APP_ENV']
 
 
 def test_warehouse_from_dict(warehouse_dict):

@@ -17,6 +17,7 @@ from blazel.base import BaseOptions
 from blazel.base import BaseSchema
 from blazel.base import BaseTable
 from blazel.base import BaseWarehouse
+from blazel.base import get_database_name
 from blazel.clients import get_extract_time_table
 from blazel.clients import get_job_table
 from blazel.clients import get_task_table
@@ -306,7 +307,7 @@ class ScheduleTask(BaseTask[ExtractLoadWarehouseType]):
 
     def __post_init__(self):
         if self.database_name is None:
-            raise ValueError('database_name is required')
+            self.database_name = get_database_name()
         if self.schema_names:
             self.schema_names = [schema_name.lower() for schema_name in self.schema_names]
         if self.table_names:

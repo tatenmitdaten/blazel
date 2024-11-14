@@ -30,7 +30,7 @@ def test_schedule(warehouse):
     data = schedule_task.as_dict
     assert schedule_task == ScheduleTask.from_dict(data)
     schedule = schedule_task(warehouse)
-    el_job = ExtractLoadJob.from_dict(schedule.as_dict['schedule'][0])
+    el_job = ExtractLoadJob.from_dict(schedule['schedule'][0])
     assert el_job.clean.schema_name == 'schema0'
     assert el_job.clean.table_name == 'table0'
     assert el_job.load.schema_name == 'schema0'

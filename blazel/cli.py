@@ -1,11 +1,9 @@
-import json
 import logging
 import os
 from enum import Enum
 from typing import Annotated
 
 import typer
-from rich import print
 from typer import Option
 
 from blazel.clients import get_stepfunctions_client
@@ -24,7 +22,7 @@ logger.setLevel(logging.INFO)
 logger.addHandler(logging.StreamHandler())
 
 
-class Modes(str, Enum):
+class Modes(Enum):
     """
     Execution mode.
     """
@@ -33,18 +31,17 @@ class Modes(str, Enum):
 
 
 class Warehouse(SnowflakeWarehouse):
+    """
+    Singleton warehouse.
+
+    The singleton allows to register extract functions before executing the CLI commands.
+    """
     _instance: SnowflakeWarehouse | None = None
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
             cls._instance = SnowflakeWarehouse.from_yaml_file()
-        if 'env' in kwargs and isinstance(kwargs['env'], Env):
-            cls._instance.env = kwargs['env']
         return cls._instance
-
-
-def get_extract_load_job(schema: str, table: str, env: Env):
-    return ExtractLoadJob.from_table(Warehouse(env)[schema][table])
 
 
 @cli.command(name='clean')
@@ -56,28 +53,32 @@ def cli_clean(
     """
     Clean S3 Snowflake stage.
     """
-    get_extract_load_job(schema, table, env).clean(Warehouse(env=env))
+    Env.set(env)
+    wh = Warehouse()
+    ExtractLoadJob.from_table(wh[schema][table]).clean(wh)
 
 
 @cli.command(name='extract')
 def cli_extract(
         schema: Annotated[str, Option(help="schema")],
         table: Annotated[str, Option(help="table")],
-        start: Annotated[str | None, Option(help="start date")] = None,
-        end: Annotated[str | None, Option(help="end date")] = None,
+        start: Annotated[str | None, Option(help="start date or datetime")] = None,
+        end: Annotated[str | None, Option(help="end date or datetime")] = None,
         limit: Annotated[int, Option(help="limit number of rows to extract")] = 0,
         env: Annotated[Env, Option(help="target environment")] = Env.dev,
 ):
     """
     Extract data from source and copy to S3 Snowflake stage.
     """
-    task = get_extract_load_job(schema, table, env).extract[0]
+    Env.set(env)
+    wh = Warehouse()
+    task = ExtractLoadJob.from_table(wh[schema][table]).extract[0]
     task.limit = limit
     if start:
         task.start = start
     if end:
         task.end = end
-    task(Warehouse(env=env))
+    task(Warehouse())
 
 
 @cli.command(name='load')
@@ -89,18 +90,39 @@ def cli_load(
     """
     Load data from stage to table in Snowflake.
     """
-    get_extract_load_job(schema, table, env).load(Warehouse(env=env))
+    Env.set(env)
+    wh = Warehouse()
+    ExtractLoadJob.from_table(wh[schema][table]).load(wh)
 
 
 @cli.command(name='schedule')
-def cli_schedule():
+def cli_schedule(
+        env: Annotated[Env, Option(help="target environment")] = Env.dev,
+):
     """
     Print schedule for extract and load tasks to console for testing.
     """
-    task: ScheduleTask = ScheduleTask(database_name='blazel')
-    print(task.as_dict)
-    schedule = task(Warehouse(env=Env.dev))
+    from rich import print
+    Env.set(env)
+    task: ScheduleTask = ScheduleTask()
+    schedule = task(Warehouse())
     print(schedule)
+
+
+def start_statemachine(name: str, input: str | None = None):
+    try:
+        aws_account_id = os.environ['AWS_ACCOUNT_ID']
+    except KeyError:
+        raise KeyError('AWS_ACCOUNT_ID environment variable not set')
+    aws_region = os.environ.get('AWS_REGION', 'eu-central-1')
+    state_machine_arn = f'arn:aws:states:{aws_region}:{aws_account_id}:stateMachine:{name}-{Env.get().value}'
+    response = get_stepfunctions_client().start_execution(
+        stateMachineArn=state_machine_arn,
+        input=input,
+    )
+    execution_arn = response['executionArn']
+    execution_link = f'https://{aws_region}.console.aws.amazon.com/states/home?region={aws_region}#/v2/executions/details/{execution_arn}'
+    print(execution_link)
 
 
 @cli.command(name='run')
@@ -114,8 +136,9 @@ def cli_run(
     """
     Run extract and load tasks. If no schema and table are provided, all tasks will be executed.
     """
-    warehouse = Warehouse(env=env)
+    Env.set(env)
     if mode == Modes.local:
+        warehouse = Warehouse()
         tables = warehouse.filter(schema_names=schema, table_names=table)
         schedule = Schedule.from_tables(tables, limit=limit)
         for job in schedule.schedule:
@@ -124,19 +147,25 @@ def cli_run(
                 task(warehouse)
             job.load(warehouse)
     else:
-        task = ScheduleTask(
-            database_name=warehouse.database_name,
-            schema_names=schema,
-            table_names=table,
-            limit=limit,
+        start_statemachine(
+            'ExtractLoadJobQueue',
+            ScheduleTask(
+                schema_names=schema,
+                table_names=table,
+                limit=limit
+            ).as_json
         )
-        aws_account_id = os.environ.get('AWS_ACCOUNT_ID')
-        extract_load_arn = f'arn:aws:states:eu-central-1:{aws_account_id}:stateMachine:ExtractLoadJobQueue-{env.value}'
-        response_sf = get_stepfunctions_client().start_execution(
-            stateMachineArn=extract_load_arn,
-            input=task.as_json,
-        )
-        print(response_sf)
+
+
+@cli.command(name='pipeline')
+def cli_pipeline(
+        env: Annotated[Env, Option(help="target environment")] = Env.dev
+):
+    """
+    Starts the pipeline state machine.
+    """
+    Env.set(env)
+    start_statemachine('Pipeline')
 
 
 @cli.command(name='tables')
@@ -149,7 +178,8 @@ def cli_tables(
     """
     Create tables in Snowflake according to src/extractload-pkg/tables.yaml.
     """
-    Warehouse(env=env).create_tables(schema_names=schema, table_names=table, overwrite=overwrite, save_files=True)
+    Env.set(env)
+    Warehouse().create_tables(schema_names=schema, table_names=table, overwrite=overwrite, save_files=True)
 
 
 if __name__ == '__main__':
