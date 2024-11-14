@@ -109,8 +109,8 @@ class SnowflakeTable(ExtractLoadTable[SnowflakeSchemaType, SnowflakeTableType, T
         logger.info(f'Deleted {counter} file(s) from {path}')
         return None
 
-    def get_key(self, file_number: int = 0, suffix: str = 'csv.gz') -> str:
-        file_name = f'file_{file_number:02d}.{suffix}'
+    def get_key(self, batch_number: int, file_number: int, suffix: str = 'csv.gz') -> str:
+        file_name = f'{self.table_name}_b{batch_number:02d}_f{file_number:02d}.{suffix}'
         return f'{self.schema_name}/{self.table_name}/{file_name}'
 
     def rows_to_bytes(self, rows: tuple[tuple, ...]) -> bytes:
@@ -135,21 +135,14 @@ class SnowflakeTable(ExtractLoadTable[SnowflakeSchemaType, SnowflakeTableType, T
         return f"""\
         COPY INTO {self.table_uri}{suffix} ({column_names})
         FROM @{self.database_name}.public.stage/{self.schema_name}/{self.table_name}/
-        FILE_FORMAT = (
-            TYPE = CSV
-            FIELD_DELIMITER = ';'
-            EMPTY_FIELD_AS_NULL = TRUE
-            SKIP_HEADER = 1
-            SKIP_BLANK_LINES = TRUE
-            TRIM_SPACE = TRUE,
-            FIELD_OPTIONALLY_ENCLOSED_BY = '"'
-        )""".replace(INDENT, '')
+        FILE_FORMAT = ( TYPE = CSV FIELD_DELIMITER = ';' EMPTY_FIELD_AS_NULL = TRUE SKIP_HEADER = 1 SKIP_BLANK_LINES = TRUE TRIM_SPACE = TRUE FIELD_OPTIONALLY_ENCLOSED_BY = '"' )""".replace(
+            INDENT, '')
 
     def get_rows(self, data: Data) -> Generator[tuple, None, None]:
         for row in data:
             yield tuple(row.get(column.name) for column in self)
 
-    def upload_to_stage(self, data: Data, chunk_size: int = 500_000):
+    def upload_to_stage(self, data: Data, batch_number: int = 0, chunk_size: int = 500_000):
         def human_readable_size(obj: bytes) -> str:
             len_bytes = len(obj)
             if len_bytes < 1024:
@@ -163,7 +156,7 @@ class SnowflakeTable(ExtractLoadTable[SnowflakeSchemaType, SnowflakeTableType, T
         rows = self.get_rows(data)
         for file_number, batch in enumerate(batched(rows, chunk_size)):
             total_rows += len(batch)
-            key = self.get_key(file_number)
+            key = self.get_key(batch_number, file_number)
             body = self.rows_to_bytes(batch)
             bucket.put_object(Body=body, Key=key)
             logger.info(f'Uploaded {human_readable_size(body)} ({len(batch)} rows) to s3://{bucket.name}/{key}')
@@ -298,8 +291,10 @@ class SnowflakeWarehouse(ExtractLoadWarehouse[SnowflakeWarehouseType, SnowflakeS
                 for table in tables:
                     create_stmt = table.create_table_stmt()
                     if save_files:
-                        file_path = Path('sql') / str(table.schema_name) / f'{table.table_name}.sql'
-                        with file_path.open('w', encoding='utf-8') as f:
+                        path = Path('sql') / str(table.schema_name)
+                        path.mkdir(exist_ok=True)
+                        file = path / f'{table.table_name}.sql'
+                        with file.open('w', encoding='utf-8') as f:
                             f.write(create_stmt)
                     drop_stmt, create_stmt = create_stmt.split(';')
                     if overwrite:

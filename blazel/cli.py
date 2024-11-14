@@ -2,6 +2,7 @@ import logging
 import os
 from enum import Enum
 from typing import Annotated
+from typing import cast
 
 import typer
 from typer import Option
@@ -10,6 +11,7 @@ from blazel.clients import get_stepfunctions_client
 from blazel.config import Env
 from blazel.tables import SnowflakeWarehouse
 from blazel.tasks import ExtractLoadJob
+from blazel.tasks import ExtractTask
 from blazel.tasks import Schedule
 from blazel.tasks import ScheduleTask
 
@@ -22,7 +24,7 @@ logger.setLevel(logging.INFO)
 logger.addHandler(logging.StreamHandler())
 
 
-class Modes(Enum):
+class Mode(str, Enum):
     """
     Execution mode.
     """
@@ -72,7 +74,7 @@ def cli_extract(
     """
     Env.set(env)
     wh = Warehouse()
-    task = ExtractLoadJob.from_table(wh[schema][table]).extract[0]
+    task = cast(ExtractTask, ExtractLoadJob.from_table(wh[schema][table]).extract[0])
     task.limit = limit
     if start:
         task.start = start
@@ -109,7 +111,7 @@ def cli_schedule(
     print(schedule)
 
 
-def start_statemachine(name: str, input: str | None = None):
+def start_statemachine(name: str, payload: str | None = None):
     try:
         aws_account_id = os.environ['AWS_ACCOUNT_ID']
     except KeyError:
@@ -118,7 +120,7 @@ def start_statemachine(name: str, input: str | None = None):
     state_machine_arn = f'arn:aws:states:{aws_region}:{aws_account_id}:stateMachine:{name}-{Env.get().value}'
     response = get_stepfunctions_client().start_execution(
         stateMachineArn=state_machine_arn,
-        input=input,
+        input=payload or '{}',
     )
     execution_arn = response['executionArn']
     execution_link = f'https://{aws_region}.console.aws.amazon.com/states/home?region={aws_region}#/v2/executions/details/{execution_arn}'
@@ -130,14 +132,14 @@ def cli_run(
         schema: Annotated[list[str] | None, Option(help="schema")] = None,
         table: Annotated[list[str] | None, Option(help="table")] = None,
         env: Annotated[Env, Option(help="target environment")] = Env.dev,
-        mode: Annotated[Modes, Option(help="local or remote execution")] = Modes.local,
+        mode: Annotated[Mode, Option(help="local or remote execution")] = Mode.local,
         limit: Annotated[int, Option(help="limit number of rows to extract")] = 0,
 ):
     """
     Run extract and load tasks. If no schema and table are provided, all tasks will be executed.
     """
     Env.set(env)
-    if mode == Modes.local:
+    if mode == Mode.local:
         warehouse = Warehouse()
         tables = warehouse.filter(schema_names=schema, table_names=table)
         schedule = Schedule.from_tables(tables, limit=limit)
@@ -173,13 +175,19 @@ def cli_tables(
         schema: Annotated[list[str] | None, Option(help="schema")] = None,
         table: Annotated[list[str] | None, Option(help="table")] = None,
         env: Annotated[Env, Option(help="target environment")] = Env.dev,
-        overwrite: bool = False,
+        overwrite: Annotated[bool, Option(help="overwrite existing tables")] = False,
+        save_files: Annotated[bool, Option(help="save create table statements to sql/ folder")] = False,
 ):
     """
     Create tables in Snowflake according to src/extractload-pkg/tables.yaml.
     """
     Env.set(env)
-    Warehouse().create_tables(schema_names=schema, table_names=table, overwrite=overwrite, save_files=True)
+    Warehouse().create_tables(
+        schema_names=schema,
+        table_names=table,
+        overwrite=overwrite,
+        save_files=save_files
+    )
 
 
 if __name__ == '__main__':

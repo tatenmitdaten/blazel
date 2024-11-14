@@ -35,7 +35,7 @@ class Column:
     comment: str | None = None
 
     def __post_init__(self):
-        self.name = self.name.lower()
+        self.name = self.name
         self.dtype = self.dtype.lower()
 
     @property
@@ -90,8 +90,10 @@ class TableOptions(BaseOptions):
     ignore: bool = False
     file_format: str = 'csv'
     primary_key: str | None = None
+    batch_key: str | None = None
     source_name: str | None = None
     where_clause: str | None = None
+    file_name: str | None = None
     use_tunnel: bool = False
 
 

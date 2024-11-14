@@ -58,15 +58,7 @@ def test_snowflake_load_stmt_csv_overwrite(schema):
 TRUNCATE TABLE IF EXISTS sources_dev.schema0.table_csv_overwrite;
 COPY INTO sources_dev.schema0.table_csv_overwrite (column0, column1)
 FROM @sources_dev.public.stage/schema0/table_csv_overwrite/
-FILE_FORMAT = (
-    TYPE = CSV
-    FIELD_DELIMITER = ';'
-    EMPTY_FIELD_AS_NULL = TRUE
-    SKIP_HEADER = 1
-    SKIP_BLANK_LINES = TRUE
-    TRIM_SPACE = TRUE,
-    FIELD_OPTIONALLY_ENCLOSED_BY = '"'
-);
+FILE_FORMAT = ( TYPE = CSV FIELD_DELIMITER = ';' EMPTY_FIELD_AS_NULL = TRUE SKIP_HEADER = 1 SKIP_BLANK_LINES = TRUE TRIM_SPACE = TRUE FIELD_OPTIONALLY_ENCLOSED_BY = '"' );
 UPDATE sources_dev.schema0.table_csv_overwrite SET load_date='2024-01-01 00:00:00'"""
 
 
@@ -76,15 +68,7 @@ DROP TABLE IF EXISTS sources_dev.schema0.table_csv_upsert_stage;
 CREATE TABLE sources_dev.schema0.table_csv_upsert_stage LIKE sources_dev.schema0.table_csv_upsert;
 COPY INTO sources_dev.schema0.table_csv_upsert_stage (column0, column1)
 FROM @sources_dev.public.stage/schema0/table_csv_upsert/
-FILE_FORMAT = (
-    TYPE = CSV
-    FIELD_DELIMITER = ';'
-    EMPTY_FIELD_AS_NULL = TRUE
-    SKIP_HEADER = 1
-    SKIP_BLANK_LINES = TRUE
-    TRIM_SPACE = TRUE,
-    FIELD_OPTIONALLY_ENCLOSED_BY = '"'
-);
+FILE_FORMAT = ( TYPE = CSV FIELD_DELIMITER = ';' EMPTY_FIELD_AS_NULL = TRUE SKIP_HEADER = 1 SKIP_BLANK_LINES = TRUE TRIM_SPACE = TRUE FIELD_OPTIONALLY_ENCLOSED_BY = '"' );
 UPDATE sources_dev.schema0.table_csv_upsert_stage SET load_date='2024-01-01 00:00:00';
 DELETE FROM sources_dev.schema0.table_csv_upsert WHERE column0 IN (SELECT column0 FROM sources_dev.schema0.table_csv_upsert_stage);
 INSERT INTO sources_dev.schema0.table_csv_upsert SELECT * FROM sources_dev.schema0.table_csv_upsert_stage"""
@@ -117,7 +101,7 @@ def test_clean_stage(monkeypatch, caplog, snowflake_bucket, table0: SnowflakeTab
 
 
 def test_get_key(table0):
-    assert table0.get_key(0) == 'schema0/table0/file_00.csv.gz'
+    assert table0.get_key(1,1) == 'schema0/table0/table0_b01_f01.csv.gz'
 
 
 def test_rows_to_bytes(table0):
@@ -149,8 +133,8 @@ def test_upload_to_stage(caplog, snowflake_bucket, table0, data):
     with caplog.at_level(logging.INFO):
         table0.upload_to_stage(data, chunk_size=1)
     line1, line2, line3 = caplog.text.strip().split('\n')
-    assert line1.endswith('Uploaded 36 bytes (1 rows) to s3://snowflake-staging-bucket-dev/schema0/table0/file_00.csv.gz')
-    assert line2.endswith('Uploaded 36 bytes (1 rows) to s3://snowflake-staging-bucket-dev/schema0/table0/file_01.csv.gz')
+    assert line1.endswith('Uploaded 36 bytes (1 rows) to s3://snowflake-staging-bucket-dev/schema0/table0/table0_b00_f00.csv.gz')
+    assert line2.endswith('Uploaded 36 bytes (1 rows) to s3://snowflake-staging-bucket-dev/schema0/table0/table0_b00_f01.csv.gz')
     assert line3.endswith('Uploaded 2 rows to stage')
 
 

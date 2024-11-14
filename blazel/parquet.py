@@ -72,8 +72,8 @@ class SnowflakeTableParquet(SnowflakeTable):
             pyarrow_fields.append(pyarrow_field)
         return _pyarrow.schema(pyarrow_fields)
 
-    def get_key(self, file_number: int = 0, suffix='parquet') -> str:
-        return super().get_key(file_number, suffix)
+    def get_key(self, batch_number: int, file_number: int, suffix='parquet') -> str:
+        return super().get_key(batch_number, file_number, suffix)
 
     def rows_to_bytes(self, rows: tuple[tuple, ...]) -> bytes:
         _pyarrow = self._import_pyarrow()

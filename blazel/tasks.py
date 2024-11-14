@@ -35,7 +35,7 @@ ExtractTaskType = TypeVar('ExtractTaskType', bound='ExtractTask')
 ExtractLoadTableType = TypeVar('ExtractLoadTableType', bound='ExtractLoadTable')
 ExtractLoadSchemaType = TypeVar('ExtractLoadSchemaType', bound='ExtractLoadSchema')
 ExtractLoadWarehouseType = TypeVar('ExtractLoadWarehouseType', bound='ExtractLoadWarehouse')
-ExtractFunctionType = Callable[[ExtractLoadTableType, TableTaskType], Data]
+ExtractFunctionType = Callable[[ExtractLoadTableType, TableTaskType], dict | None]
 
 
 @dataclass

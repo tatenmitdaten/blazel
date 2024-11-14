@@ -27,11 +27,16 @@ dev = [
     "pytest",
     "moto[s3,dynamodb]",
     "types-PyYAML",
+    "types-requests",
     "mypy",
     "flake8",
 ]
 parquet = [
     "pyarrow"
+]
+sharepoint = [
+    "msal",
+    "requests",
 ]
 
 [project.scripts]
