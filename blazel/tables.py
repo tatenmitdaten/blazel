@@ -187,7 +187,14 @@ class SnowflakeTable(ExtractLoadTable[SnowflakeSchemaType, SnowflakeTableType, T
     def load_stmt_str(self) -> str:
         return ';\n'.join(self.load_stmt().values())
 
-    def save_latest_timestamp(self, latest_timestamp: str):
+    def get_latest_timestamp(self) -> str | None:
+        if self.options.timestamp_field is None:
+            raise ValueError('The timestamp_field in options is not set')
+        response = get_extract_time_table().get_item(Key={'table_uri': self.table_uri})
+        latest_timestamp = response.get('Item', {}).get(self.options.timestamp_field)
+        return cast(str | None, latest_timestamp)
+
+    def set_latest_timestamp(self, latest_timestamp: str):
         if self.options.timestamp_field is None:
             raise ValueError('The timestamp_field in options is not set')
         get_extract_time_table().put_item(
@@ -198,6 +205,12 @@ class SnowflakeTable(ExtractLoadTable[SnowflakeSchemaType, SnowflakeTableType, T
             }
         )
         logger.info(f'Set latest timestamp {self.options.timestamp_field}={latest_timestamp} for {self.table_uri}')
+
+    def set_batches(self, rows_count: int):
+        column_count = len(self.columns)
+        batches = 1 + rows_count * column_count // 125_000_000
+        self.options.batches = batches
+        logger.info(f'Set {self.table_name}.options.batches={batches} [{column_count} columns, {rows_count} rows]')
 
     def load_from_stage(self) -> dict | None:
         """
@@ -223,7 +236,7 @@ class SnowflakeTable(ExtractLoadTable[SnowflakeSchemaType, SnowflakeTableType, T
                 if self.options.timestamp_field:
                     snowflake_cursor.execute(f'SELECT MAX({self.options.timestamp_field}) FROM {self.table_uri}')
                     result: tuple = snowflake_cursor.fetchone()  # type: ignore
-                    self.save_latest_timestamp(result[0])
+                    self.set_latest_timestamp(result[0])
         return None
 
 

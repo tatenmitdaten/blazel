@@ -14,6 +14,7 @@ from blazel.tasks import ExtractLoadJob
 from blazel.tasks import ExtractTask
 from blazel.tasks import Schedule
 from blazel.tasks import ScheduleTask
+from blazel.tasks import TaskOptions
 
 cli = typer.Typer(
     pretty_exceptions_enable=False
@@ -75,11 +76,11 @@ def cli_extract(
     Env.set(env)
     wh = Warehouse()
     task = cast(ExtractTask, ExtractLoadJob.from_table(wh[schema][table]).extract[0])
-    task.limit = limit
-    if start:
-        task.start = start
-    if end:
-        task.end = end
+    task.options = TaskOptions(
+        start=start,
+        end=end,
+        limit=limit,
+    )
     task(Warehouse())
 
 
@@ -131,6 +132,8 @@ def start_statemachine(name: str, payload: str | None = None):
 def cli_run(
         schema: Annotated[list[str] | None, Option(help="schema")] = None,
         table: Annotated[list[str] | None, Option(help="table")] = None,
+        start: Annotated[str | None, Option(help="start date or datetime")] = None,
+        end: Annotated[str | None, Option(help="end date or datetime")] = None,
         env: Annotated[Env, Option(help="target environment")] = Env.dev,
         mode: Annotated[Mode, Option(help="local or remote execution")] = Mode.local,
         limit: Annotated[int, Option(help="limit number of rows to extract")] = 0,
@@ -139,10 +142,15 @@ def cli_run(
     Run extract and load tasks. If no schema and table are provided, all tasks will be executed.
     """
     Env.set(env)
+    options = TaskOptions(
+        start=start,
+        end=end,
+        limit=limit,
+    )
     if mode == Mode.local:
         warehouse = Warehouse()
         tables = warehouse.filter(schema_names=schema, table_names=table)
-        schedule = Schedule.from_tables(tables, limit=limit)
+        schedule = Schedule.from_tables(tables, options)
         for job in schedule.schedule:
             job.clean(warehouse)
             for task in job.extract:
@@ -154,7 +162,7 @@ def cli_run(
             ScheduleTask(
                 schema_names=schema,
                 table_names=table,
-                limit=limit
+                options=options
             ).as_json
         )
 

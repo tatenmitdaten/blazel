@@ -70,10 +70,7 @@ class Column:
 @dataclass_transform()
 @dataclass
 class BaseOptions:
-    batches: int = 1
-    look_back_days: int | None = None
-    timestamp_field: str | None = None
-    timezone: str = 'Europe/Berlin'
+    pass
 
     @property
     def as_dict(self) -> dict[str, int | bool | str | None]:
@@ -88,11 +85,15 @@ class BaseOptions:
 @dataclass
 class TableOptions(BaseOptions):
     ignore: bool = False
+    batches: int = 1
     file_format: str = 'csv'
     primary_key: str | None = None
     batch_key: str | None = None
     source_name: str | None = None
     where_clause: str | None = None
+    look_back_days: int | None = None
+    timestamp_field: str | None = None
+    timezone: str = 'Europe/Berlin'
     file_name: str | None = None
     use_tunnel: bool = False
 
@@ -120,14 +121,6 @@ class BaseTable(Generic[BaseSchemaType, BaseTableType]):
     @property
     def table_uri(self) -> str:
         return f'{self.database_name}.{self.schema_name}.{self.table_name}'
-
-    @property
-    def base_options(self) -> BaseOptions:
-        options = BaseOptions()
-        # noinspection PyTypeChecker
-        for f in fields(options):
-            setattr(options, f.name, getattr(self.options, f.name))
-        return options
 
     @property
     def serialized(self) -> dict:

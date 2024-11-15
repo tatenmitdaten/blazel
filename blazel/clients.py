@@ -25,19 +25,19 @@ def get_secretsmanager_client() -> SecretsManagerClient:
 
 
 def get_job_table() -> Table:
-    job_table_stem = get_parameters()['JobTableStem']
+    job_table_stem = get_parameters().get('JobTableStem', 'job')
     job_table_name = f'{job_table_stem}-{Env.get().value}'
     return boto3.resource('dynamodb').Table(job_table_name)
 
 
 def get_task_table() -> Table:
-    task_table_stem = get_parameters()['TaskTableStem']
+    task_table_stem = get_parameters().get('TaskTableStem', 'task')
     task_table_name = f'{task_table_stem}-{Env.get().value}'
     return boto3.resource('dynamodb').Table(task_table_name)
 
 
 def get_extract_time_table() -> Table:
-    extract_time_table_stem = get_parameters()['ExtractTimeTableStem']
+    extract_time_table_stem = get_parameters().get('ExtractTimeTableStem', 'extract-time')
     extract_time_table_name = f'{extract_time_table_stem}-{Env.get().value}'
     return boto3.resource('dynamodb').Table(extract_time_table_name)
 

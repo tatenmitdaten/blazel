@@ -164,17 +164,18 @@ def extract_time_table(mocked_aws, parameters):
 def test_extract_task_latest_timestamp(extract_time_table, parameters, table0):
     latest_timestamp = '2024-01-01T00:00:00'
     task = ExtractLoadJob.from_table(table0).extract[0]
-    assert task.start is None
+    assert task.options.start is None
     table0.options.timestamp_field = 'column1'
-    table0.save_latest_timestamp(latest_timestamp)
-    task = ExtractLoadJob.from_table(table0).extract[0]
-    assert task.start == latest_timestamp
+    table0.set_latest_timestamp(latest_timestamp)
+    time_range = task.get_time_range(table0)
+    assert time_range.start == latest_timestamp
 
 
 def test_extract_task_lookback(monkeypatch, table0):
     latest_timestamp = '2024-01-01T00:00:00'
     now_timestamp = datetime.datetime.strptime('2024-01-02T00:00:00', '%Y-%m-%dT%H:%M:%S')
     table0.options.look_back_days = 1
-    monkeypatch.setattr('blazel.tasks.ExtractTask._get_now_timestamp', lambda self: now_timestamp)
+    monkeypatch.setattr('blazel.tasks.TimeRange._get_now_timestamp', lambda self: now_timestamp)
     task = ExtractLoadJob.from_table(table0).extract[0]
-    assert task.start == latest_timestamp
+    time_range = task.get_time_range(table0)
+    assert time_range.start == latest_timestamp

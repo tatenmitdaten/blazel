@@ -18,7 +18,6 @@ from blazel.base import BaseSchema
 from blazel.base import BaseTable
 from blazel.base import BaseWarehouse
 from blazel.base import get_database_name
-from blazel.clients import get_extract_time_table
 from blazel.clients import get_job_table
 from blazel.clients import get_task_table
 from blazel.config import default_timestamp_format
@@ -58,6 +57,10 @@ class ExtractLoadTable(
     def upload_to_stage(self, data: Data):
         pass
 
+    @abstractmethod
+    def get_latest_timestamp(self) -> str | None:
+        pass
+
     def register_extract_function(self, f: ExtractFunctionType):
         self.extract_function = f
 
@@ -68,6 +71,14 @@ class ExtractLoadSchema(BaseSchema[ExtractLoadWarehouseType, ExtractLoadSchemaTy
 
 class ExtractLoadWarehouse(BaseWarehouse[ExtractLoadWarehouseType, ExtractLoadSchemaType, ExtractLoadTableType]):
     pass
+
+
+@dataclass
+class TaskOptions(BaseOptions):
+    start: str | None = None
+    end: str | None = None
+    batches: int = 1
+    limit: int = 0
 
 
 @dataclass
@@ -146,14 +157,53 @@ class LoadTask(TableTask):
         return self.table(warehouse).load_from_stage()
 
 
+class TimeRange(Generic[ExtractLoadTableType]):
+    def __init__(self, task: 'ExtractTask', table: ExtractLoadTableType):
+        self.tzinfo = zoneinfo.ZoneInfo(table.options.timezone)
+
+        start = task.options.start
+        end = task.options.end
+        if start is None:
+            if table.options.timestamp_field:
+                start = table.get_latest_timestamp()
+            if table.options.look_back_days:
+                interval = datetime.timedelta(days=table.options.look_back_days)
+                start_date = self._get_now_timestamp() - interval
+                start = start_date.strftime(default_timestamp_format)
+        if start is None:
+            start_date = datetime.datetime(year=1980, month=1, day=1)
+            start = start_date.strftime(default_timestamp_format)
+        if end is None:
+            end_date = datetime.datetime(year=2100, month=12, day=31)
+            end = end_date.strftime(default_timestamp_format)
+
+        self.start = start
+        self.end = end
+
+    @property
+    def start_date(self) -> datetime.datetime:
+        return self._parse_date(self.start)
+
+    @property
+    def end_date(self) -> datetime.datetime:
+        return self._parse_date(self.end)
+
+    def _get_now_timestamp(self):
+        return datetime.datetime.now(tz=self.tzinfo)
+
+    @staticmethod
+    def _parse_date(date: str) -> datetime.datetime:
+        try:
+            return datetime.datetime.strptime(date, default_timestamp_format)
+        except ValueError:
+            raise ValueError(f'Unable to parse date "{date}". Required format: {default_timestamp_format}')
+
+
 @dataclass
 class ExtractTask(TableTask):
     task_type: str = field(default="ExtractTask", init=False)
     task_number: int = 0
-    start: str | None = None
-    end: str | None = None
-    options: BaseOptions = field(default_factory=BaseOptions)
-    limit: int = 0
+    options: TaskOptions = field(default_factory=TaskOptions)
 
     def __call__(self, warehouse: ExtractLoadWarehouseType):
         table = self.table(warehouse)
@@ -161,38 +211,8 @@ class ExtractTask(TableTask):
             raise ValueError(f'No extract function registered for table {self.table_uri}')
         return table.extract_function(table, self)
 
-    def __post_init__(self):
-        if self.start is None:
-            if self.options.timestamp_field:
-                extract_table = get_extract_time_table()
-                item = extract_table.get_item(Key={'table_uri': self.table_uri})
-                if 'Item' in item:
-                    self.start = str(item['Item'][self.options.timestamp_field])
-            if self.options.look_back_days:
-                interval = datetime.timedelta(days=self.options.look_back_days)
-                self.start = (self._get_now_timestamp() - interval).strftime(default_timestamp_format)
-
-    def _get_now_timestamp(self):
-        return datetime.datetime.now(tz=zoneinfo.ZoneInfo(self.options.timezone))
-
-    @staticmethod
-    def _parse_date(date: str, timezone: str) -> datetime.datetime:
-        try:
-            return datetime.datetime.now(tz=zoneinfo.ZoneInfo(timezone))
-        except ValueError:
-            raise ValueError(f'Unable to parse date "{date}". Required format: {default_timestamp_format}')
-
-    @property
-    def start_date(self) -> datetime.datetime:
-        if self.start is None:
-            return datetime.datetime(1980, 1, 1, tzinfo=zoneinfo.ZoneInfo(self.options.timezone))
-        return self._parse_date(self.start, self.options.timezone)
-
-    @property
-    def end_date(self) -> datetime.datetime:
-        if self.end is None:
-            return datetime.datetime(2100, 12, 31, tzinfo=zoneinfo.ZoneInfo(self.options.timezone))
-        return self._parse_date(self.end, self.options.timezone)
+    def get_time_range(self, table: ExtractLoadTableType) -> 'TimeRange':
+        return TimeRange(self, table)
 
 
 @dataclass
@@ -210,7 +230,7 @@ class ExtractLoadJob(Serializable):
         return super().from_dict(data)
 
     @classmethod
-    def from_table(cls, table: ExtractLoadTable, limit: int = 0) -> 'ExtractLoadJob':
+    def from_table(cls, table: ExtractLoadTable, options: TaskOptions | None = None) -> 'ExtractLoadJob':
         job_id = uuid.uuid4().hex
         return cls(
             job_id=job_id,
@@ -227,8 +247,7 @@ class ExtractLoadJob(Serializable):
                     schema_name=table.schema_name,
                     table_name=table.table_name,
                     task_number=task_number,
-                    options=table.base_options,
-                    limit=limit,
+                    options=options or TaskOptions(),
                 ) for task_number in range(table.options.batches)
             ],
             load=LoadTask(
@@ -286,13 +305,13 @@ class Schedule(Serializable):
         ])
 
     @classmethod
-    def from_tables(cls, tables: list[ExtractLoadTableType], limit: int = 0) -> 'Schedule':
+    def from_tables(cls, tables: list[ExtractLoadTableType], options: TaskOptions) -> 'Schedule':
         schedule = Schedule()
         for table in tables:
             if table.options.ignore:
                 continue
             schedule.schedule.append(
-                ExtractLoadJob.from_table(table, limit=limit)
+                ExtractLoadJob.from_table(table, options)
             )
         return schedule
 
@@ -303,7 +322,7 @@ class ScheduleTask(BaseTask[ExtractLoadWarehouseType]):
     database_name: str | None = None
     schema_names: list[str] | None = None
     table_names: list[str] | None = None
-    limit: int = 0
+    options: TaskOptions = field(default_factory=TaskOptions)
 
     def __post_init__(self):
         if self.database_name is None:
@@ -322,7 +341,7 @@ class ScheduleTask(BaseTask[ExtractLoadWarehouseType]):
             schedule = Schedule.error_schedule()
         else:
             tables = warehouse.filter(self.schema_names, self.table_names)
-            schedule = Schedule.from_tables(tables, limit=self.limit)
+            schedule = Schedule.from_tables(tables, options=self.options)
         return schedule.as_dict
 
 
