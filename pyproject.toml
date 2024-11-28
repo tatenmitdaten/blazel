@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "blazel"
+authors = [
+    { name = "Christian Schäfer", email = "christian.schaefer@tatenmitdaten.com" },
+]
+description = "Package for running extract load jobs on AWS Lambda"
+requires-python = ">=3.12"
+dynamic = ["version"]
+
+dependencies = [
+    "snowflake-connector-python",
+    "pyyaml",
+    "boto3-stubs[s3,dynamodb,secretsmanager,lambda,stepfunctions]",
+]
+
+[project.optional-dependencies]
+dev = [
+    "boto3",
+    "mypy",
+    "flake8",
+    "pytest",
+    "moto[s3,dynamodb]",
+    "types-PyYAML",
+    "types-paramiko",
+    "types-requests",
+]
+cli = [
+    "typer",
+]
+entra = [
+    "msal",
+    "requests",
+]
+database = [
+    "paramiko",
+    "sshtunnel",
+]
+sqlserver = [
+    "pyodbc",
+    "paramiko",
+    "sshtunnel",
+]
+
+[project.scripts]
+blazel = "blazel.cli:cli"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.distutils.egg_info]
+egg_base = "."
