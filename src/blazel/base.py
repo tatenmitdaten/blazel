@@ -98,6 +98,7 @@ class TableOptions(BaseOptions):
     timezone: str = 'Europe/Berlin'
     file_name: str | None = None
     use_tunnel: bool = False
+    avg_row_size: int = 0
 
 
 @dataclass_transform()
