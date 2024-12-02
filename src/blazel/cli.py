@@ -1,15 +1,15 @@
+import json
 import logging
 import os
 from typing import Annotated
 from typing import cast
 
+import boto3
 import rich
 import rich.table
 import typer
-from click import clear
 from typer import Option
 
-from blazel.clients import get_stepfunctions_client
 from blazel.config import Env
 from blazel.tables import SnowflakeTable
 from blazel.tables import SnowflakeWarehouse
@@ -124,13 +124,33 @@ def start_statemachine(name: str, payload: str | None = None):
         raise KeyError('AWS_ACCOUNT_ID environment variable not set')
     aws_region = os.environ.get('AWS_REGION', 'eu-central-1')
     state_machine_arn = f'arn:aws:states:{aws_region}:{aws_account_id}:stateMachine:{name}-{Env.get().value}'
-    response = get_stepfunctions_client().start_execution(
+    response = boto3.client('stepfunctions').start_execution(
         stateMachineArn=state_machine_arn,
         input=payload or '{}',
     )
     execution_arn = response['executionArn']
     execution_link = f'https://{aws_region}.console.aws.amazon.com/states/home?region={aws_region}#/v2/executions/details/{execution_arn}'
     print(execution_link)
+
+
+def invoke_lambda_function(name: str, payload: dict | str):
+    from rich import print
+    env = os.environ.get('APP_ENV', 'dev')
+    aws_region = os.environ.get('AWS_REGION', 'eu-central-1')
+    try:
+        aws_account_id = os.environ['AWS_ACCOUNT_ID']
+    except KeyError:
+        raise KeyError('AWS_ACCOUNT_ID environment variable not set')
+    function_arn = f'arn:aws:lambda:{aws_region}:{aws_account_id}:function:{name}-{env}'
+    if isinstance(payload, dict):
+        payload = json.dumps(payload)
+    response = boto3.client('lambda').invoke(
+        FunctionName=function_arn,
+        Payload=payload or '{}',
+
+    )
+    payload = json.loads(response['Payload'].read())
+    print(payload)
 
 
 @cli.command(name='run')
@@ -184,6 +204,7 @@ def cli_timestamps(
     Env.set(env)
     for table in Warehouse().filter(schema_names=schema, table_names=table):
         cast(SnowflakeTable, table).update_timestamp_field()
+
 
 @cli.command(name='pipeline')
 def cli_pipeline(

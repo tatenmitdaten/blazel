@@ -7,7 +7,7 @@ venv:
 	$(venv_path)/bin/python -m pip install --upgrade pip-tools pip setuptools
 
 install:
-	$(venv_path)/bin/python -m pip install -e .[entra,sqlserver,dev]
+	$(venv_path)/bin/python -m pip install -e .[cli,entra,sqlserver,dev]
 
 setup: venv install
 

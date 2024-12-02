@@ -175,54 +175,6 @@ class LoadTask(TableTask):
         return self.table(warehouse).load_from_stage()
 
 
-class TimeRange(Generic[ExtractLoadTableType]):
-    def __init__(self, task: 'ExtractTask', table: ExtractLoadTableType):
-        self.tzinfo = zoneinfo.ZoneInfo(table.options.timezone)
-
-        start = task.options.start
-        end = task.options.end
-        if start is None:
-            if table.options.timestamp_field:
-                start = table.get_latest_timestamp()
-            if table.options.look_back_days:
-                interval = datetime.timedelta(days=table.options.look_back_days)
-                start_date = self._get_now_timestamp() - interval
-                start = start_date.strftime(default_timestamp_format)
-        if start is None:
-            start_date = datetime.datetime(year=1980, month=1, day=1)
-            start = start_date.strftime(default_timestamp_format)
-        if end is None:
-            end_date = datetime.datetime(year=2100, month=12, day=31)
-            end = end_date.strftime(default_timestamp_format)
-
-        self.start = start
-        self.end = end
-
-    @property
-    def start_date(self) -> datetime.datetime:
-        date_str = self.start
-        if len(date_str) == 10:
-            date_str += 'T00:00:00'
-        return self._parse_date(date_str)
-
-    @property
-    def end_date(self) -> datetime.datetime:
-        date_str = self.end
-        if len(date_str) == 10:
-            date_str += 'T23:59:59'
-        return self._parse_date(date_str)
-
-    def _get_now_timestamp(self):
-        return datetime.datetime.now(tz=self.tzinfo)
-
-    @staticmethod
-    def _parse_date(date: str) -> datetime.datetime:
-        try:
-            return datetime.datetime.strptime(date, default_timestamp_format)
-        except ValueError:
-            raise ValueError(f'Unable to parse date "{date}". Required format: {default_timestamp_format}')
-
-
 @dataclass
 class ExtractTask(TableTask):
     task_type: str = field(default="ExtractTask", init=False)
@@ -389,11 +341,67 @@ class ScheduleTask(BaseTask[ExtractLoadWarehouseType]):
             schedule = Schedule.from_tables(tables, options=self.options)
         return schedule.as_dict
 
+    def get_time_range(self, table: ExtractLoadTableType) -> 'TimeRange':
+        return TimeRange(self, table)
+
     @classmethod
     def from_dict(cls, data: dict) -> 'ScheduleTask':
         if 'options' in data:
             data['options'] = TaskOptions.from_dict(data['options'])
         return super().from_dict(data)  # type: ignore
+
+
+class TimeRange(Generic[ExtractLoadTableType]):
+    min_start_str = datetime.datetime(year=1900, month=1, day=1).strftime(default_timestamp_format)
+    max_end_str = datetime.datetime(year=2100, month=12, day=31).strftime(default_timestamp_format)
+
+    def __init__(self, task: ExtractTask | ScheduleTask, table: ExtractLoadTableType):
+        self.tzinfo = zoneinfo.ZoneInfo(table.options.timezone)
+
+        start = task.options.start
+        end = task.options.end
+        if start is None:
+            if table.options.timestamp_field:
+                start = table.get_latest_timestamp()
+            if table.options.look_back_days:
+                interval = datetime.timedelta(days=table.options.look_back_days)
+                start_date = self._get_now_timestamp() - interval
+                start = start_date.strftime(default_timestamp_format)
+
+        self.start = start
+        self.end = end
+
+    @property
+    def start_str(self) -> str:
+        return self.start if self.start else self.min_start_str
+
+    @property
+    def end_str(self) -> str:
+        return self.end if self.end else self.max_end_str
+
+    @property
+    def start_date(self) -> datetime.datetime:
+        date_str = self.start_str
+        if len(date_str) == 10:
+            date_str += 'T00:00:00'
+        return self._parse_date(date_str)
+
+    @property
+    def end_date(self) -> datetime.datetime:
+        date_str = self.end_str
+        if len(date_str) == 10:
+            date_str += 'T23:59:59'
+        return self._parse_date(date_str)
+
+    def _get_now_timestamp(self):
+        return datetime.datetime.now(tz=self.tzinfo)
+
+    @staticmethod
+    def _parse_date(date: str) -> datetime.datetime:
+        try:
+            return datetime.datetime.strptime(date, default_timestamp_format)
+        except ValueError:
+            raise ValueError(f'Unable to parse date "{date}". Required format: {default_timestamp_format}')
 
 
 class TaskFactory(Generic[BaseTaskType]):

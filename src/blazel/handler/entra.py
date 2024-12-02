@@ -107,14 +107,20 @@ class PowerBIHandler(EntraServiceHandler):
         'https://analysis.windows.net/powerbi/api/Dataset.ReadWrite.All',
     ]
 
-    def refresh_dataset(self, dataset_id):
+    def refresh_dataset(self, dataset_id: str) -> dict | None:
         url = f"{self.base_url}/datasets/{dataset_id}/refreshes"
         response = requests.post(url, headers=self.headers)
+        message = {}
         if response.status_code == 202:
             logger.info(f"Dataset refresh started successfully. Dataset: {dataset_id}")
         else:
             logger.info(f"Failed to start dataset refresh. Code: {response.status_code}")
             logger.info(response.text)
+            message = response.json()
+        return {
+            'status_code': response.status_code,
+            **message
+        }
 
 
 @dataclass

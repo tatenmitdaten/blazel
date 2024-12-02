@@ -6,7 +6,6 @@ from mypy_boto3_dynamodb.service_resource import Table
 from mypy_boto3_s3 import S3Client
 from mypy_boto3_s3.service_resource import Bucket
 from mypy_boto3_secretsmanager import SecretsManagerClient
-from mypy_boto3_stepfunctions import SFNClient
 
 from blazel.config import Env
 from blazel.config import get_parameters
@@ -14,10 +13,6 @@ from blazel.config import get_parameters
 
 def get_s3_client() -> S3Client:
     return boto3.client('s3')
-
-
-def get_stepfunctions_client() -> SFNClient:
-    return boto3.client('stepfunctions')
 
 
 def get_secretsmanager_client() -> SecretsManagerClient:
