@@ -5,6 +5,7 @@ from typing import Annotated
 from typing import cast
 
 import boto3
+import click
 import rich
 import rich.table
 import typer
@@ -226,22 +227,32 @@ def cli_file(
         line: Annotated[int, Option('-l', '--line', help="line number")] = 1,
         n: Annotated[int, Option('-n', '--n', help="number of lines to display")] = 10,
         env: Annotated[Env, Option(help="target environment")] = Env.dev,
-        raw: Annotated[bool, Option(help="display raw data")] = False,
+        style: Annotated[
+            str, Option(click_type=click.Choice(['raw', 'json', 'csv']), help="display raw data")
+        ] = 'raw',
 ):
     """
     Run extract load transform pipeline
     """
     Env.set(env)
     table: SnowflakeTable = Warehouse()[schema_name][table_name]
-    data = table.download_from_stage(batch_number, file_number, raw)
+    data = table.download_from_stage(batch_number, file_number, style == 'raw')
     if line > len(data):
         print(f'Line {line} is out of range. The file has {len(data)} line(s).')
         return
-    header = ['raw'] if raw else table.columns
-    output = rich.table.Table('line', *header, title=table.table_name)
-    for i in range(line - 1, min(line - 1 + n, len(data))):
-        x = [data[i]] if raw else [str(item) for item in data[i]]
-        output.add_row(str(i + 1), *x)  # type: ignore
+    index = range(line - 1, min(line - 1 + n, len(data)))
+    output = None
+    match style:
+        case 'json':
+            output = {i: dict(zip(table.columns, data[i])) for i in index}
+        case 'csv':
+            output = rich.table.Table('line', *table.columns, title=table.table_name)
+            for i in index:
+                output.add_row(str(i + 1), *[str(item) for item in data[i]])  # type: ignore
+        case 'raw':
+            output = rich.table.Table('line', 'raw', title=table.table_name)
+            for i in index:
+                output.add_row(str(i + 1), data[i])  # type: ignore
     rich.print(output)
 
 
