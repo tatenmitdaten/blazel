@@ -1,14 +1,17 @@
+import gzip
 import logging
 import os
+import re
 from dataclasses import dataclass
 from dataclasses import field
 from functools import lru_cache
+from io import BufferedReader
 from pathlib import Path
 from typing import ClassVar
+from typing import Generator
 
 import msal  # type: ignore
 import requests
-
 from blazel.clients import get_secretsmanager_client
 
 DictTuple = tuple[tuple[str, str], ...]
@@ -146,15 +149,25 @@ class SharepointHandler(EntraServiceHandler):
                 return file['@microsoft.graph.downloadUrl']
         raise RuntimeError(f'{file_name} not found on Sharepoint')
 
-    def get_file(self, file_path: str, file_name: str) -> bytes:
+    @staticmethod
+    def match_wildcard(file_expr: str, file_name: str) -> bool:
+        """
+        Match a file name against a wildcard expression.
+        """
+        escaped_expr = re.escape(file_expr).replace(r'\*', '.*')
+        pattern = f'^{escaped_expr}$'
+        return re.match(pattern, file_name) is not None
+
+    def get_file_streams(self, file_path: str, file_expr: str) -> Generator[BufferedReader, None, None]:
         urls = self.get_download_urls_cached(self.headers_tuple, self.root_url, file_path)
-        return self.get_file_cached(urls, file_path, file_name)
+        for file_name, url in urls:
+            if self.match_wildcard(file_expr, file_name):
+                yield self.get_file_stream_cached(urls, file_path, file_name)
 
     @staticmethod
     @lru_cache
     def get_download_urls_cached(headers: DictTuple, root_url: str, path: str) -> DictTuple:
         response = requests.get(f'{root_url}/root:/{path}', headers=dict(headers))
-        print(response.json())
         folder_id = response.json()['id']
         response = requests.get(f'{root_url}/items/{folder_id}/children', headers=dict(headers))
         return tuple(
@@ -164,31 +177,37 @@ class SharepointHandler(EntraServiceHandler):
 
     @staticmethod
     @lru_cache
-    def get_file_cached(
+    def get_file_stream_cached(
             urls_tuple: DictTuple,
             file_path: str,
             file_name: str,
             local_cache_folder: str = 'cache',
             use_local_cache: bool = False
-    ) -> bytes:
+    ) -> BufferedReader:
         urls = dict(urls_tuple)
 
-        def get_file(_file_path, _file_name):
+        def get_file_response(_file_path, _file_name) -> requests.Response:
             if _file_name not in urls:
                 raise ValueError(f'File not found: "{_file_name}" in {urls.keys()}')
-            response = requests.get(urls[_file_name])
+            logger.info(f'Downloading {_file_name} from {urls[_file_name]}')
+            response = requests.get(urls[_file_name], stream=True)
             if response.status_code != 200:
                 raise Exception(f'Error downloading file: {response.status_code}')
-            return response.content
+            return response
 
         if use_local_cache:
             local_path = Path(local_cache_folder) / file_path / file_name
             if not local_path.exists():
-                file_bytes = get_file(file_path, file_name)
+                file_bytes = get_file_response(file_path, file_name).content
                 local_path.parent.mkdir(parents=True, exist_ok=True)
                 local_path.write_bytes(file_bytes)
             else:
                 file_bytes = local_path.read_bytes()
+            stream = BufferedReader(file_bytes)
         else:
-            file_bytes = get_file(file_path, file_name)
-        return file_bytes
+            file_response = get_file_response(file_path, file_name)
+            if file_response.headers.get('Content-Encoding') == 'gzip':
+                stream = gzip.GzipFile(fileobj=file_response.raw)
+            else:
+                stream = BufferedReader(file_response.raw)
+        return stream
