@@ -12,7 +12,7 @@ from blazel.handler.database import BaseDatabase
 logger = logging.getLogger()
 
 
-class SQLServerDatabase(BaseDatabase):
+class SQLServerDatabase(BaseDatabase['SQLServerDatabase']):
     odbc_driver_path = '/opt/microsoft/msodbcsql17/lib64/libmsodbcsql-17.10.so.6.1'
 
     @contextmanager

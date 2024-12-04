@@ -8,18 +8,22 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from typing import Generic
+from typing import Type
+from typing import TypeVar
 
 import paramiko.rsakey
 import sshtunnel  # type: ignore
-
 from blazel.clients import get_secretsmanager_client
 from blazel.tasks import Data
 
 logger = logging.getLogger()
 
+DatabaseType = TypeVar('DatabaseType', bound='BaseDatabase')
+
 
 @dataclass
-class BaseDatabase:
+class BaseDatabase(Generic[DatabaseType]):
     username: str
     password: str
     host: str | None = None
@@ -51,7 +55,7 @@ class BaseDatabase:
 
     @classmethod
     @lru_cache
-    def from_secret(cls, secret_id: str) -> 'BaseDatabase':
+    def from_secret(cls: Type[DatabaseType], secret_id: str) -> DatabaseType:
         client = get_secretsmanager_client()
         secret_str = client.get_secret_value(SecretId=secret_id)['SecretString']
         secret = json.loads(secret_str)

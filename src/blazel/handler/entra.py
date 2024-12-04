@@ -12,6 +12,7 @@ from typing import Generator
 
 import msal  # type: ignore
 import requests
+
 from blazel.clients import get_secretsmanager_client
 
 DictTuple = tuple[tuple[str, str], ...]
@@ -196,6 +197,7 @@ class SharepointHandler(EntraServiceHandler):
                 raise Exception(f'Error downloading file: {response.status_code}')
             return response
 
+        stream: BufferedReader
         if use_local_cache:
             local_path = Path(local_cache_folder) / file_path / file_name
             if not local_path.exists():
@@ -204,11 +206,11 @@ class SharepointHandler(EntraServiceHandler):
                 local_path.write_bytes(file_bytes)
             else:
                 file_bytes = local_path.read_bytes()
-            stream = BufferedReader(file_bytes)
+            stream = BufferedReader(file_bytes)  # type: ignore
         else:
             file_response = get_file_response(file_path, file_name)
             if file_response.headers.get('Content-Encoding') == 'gzip':
-                stream = gzip.GzipFile(fileobj=file_response.raw)
+                stream = gzip.GzipFile(fileobj=file_response.raw)  # type: ignore
             else:
-                stream = BufferedReader(file_response.raw)
+                stream = BufferedReader(file_response.raw)  # type: ignore
         return stream

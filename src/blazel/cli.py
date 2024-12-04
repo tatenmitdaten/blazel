@@ -241,7 +241,7 @@ def cli_file(
         print(f'Line {line} is out of range. The file has {len(data)} line(s).')
         return
     index = range(line - 1, min(line - 1 + n, len(data)))
-    output = None
+    output: rich.table.Table | dict
     match style:
         case 'json':
             output = {i: dict(zip(table.columns, data[i])) for i in index}
