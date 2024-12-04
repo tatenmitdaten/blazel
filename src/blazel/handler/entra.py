@@ -173,6 +173,7 @@ class SharepointHandler(EntraServiceHandler):
         return tuple(
             (file['name'], file['@microsoft.graph.downloadUrl'])
             for file in response.json()['value']
+            if '@microsoft.graph.downloadUrl' in file
         )
 
     @staticmethod
