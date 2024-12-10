@@ -227,16 +227,30 @@ class BaseWarehouse(Generic[BaseWarehouseType, BaseSchemaType, BaseTableType]):
     def filter(
             self,
             schema_names: set[str] | list[str] | None = None,
-            table_names: set[str] | list[str] | None = None
+            table_names: set[str] | list[str] | None = None,
+            stratify: bool = False
     ) -> list[BaseTableType]:
-        tables: list[BaseTableType] = []
         if schema_names is not None:
             schema_names = [schema_name.lower() for schema_name in schema_names]
-        for schema in self:
-            if schema_names is not None and schema.schema_name not in schema_names:
-                continue
-            tables.extend(schema.filter(table_names))
-        return tables
+        warehouse = {
+            schema.schema_name: [
+                table for table in schema.filter(table_names)
+            ]
+            for schema in self
+            if schema_names is None or schema.schema_name in schema_names
+        }
+        result: list[BaseTableType] = []
+        while warehouse:
+            for schema_name in list(warehouse.keys()):
+                if stratify:
+                    result.append(warehouse[schema_name].pop(0))
+                    if not warehouse[schema_name]:
+                        del warehouse[schema_name]
+                else:
+                    result.extend(warehouse[schema_name])
+                    del warehouse[schema_name]
+
+        return result
 
     def from_filter(
             self,

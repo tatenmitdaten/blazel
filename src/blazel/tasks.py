@@ -337,7 +337,7 @@ class ScheduleTask(BaseTask[ExtractLoadWarehouseType]):
                 os.environ['FAIL_ON_ERROR'] = str(self.options.fail_on_error)
                 raise RuntimeError(f'{self.task_type} Test Error')
         else:
-            tables = warehouse.filter(self.schema_names, self.table_names)
+            tables = warehouse.filter(self.schema_names, self.table_names, stratify=True)
             schedule = Schedule.from_tables(tables, options=self.options)
         return schedule.as_dict
 

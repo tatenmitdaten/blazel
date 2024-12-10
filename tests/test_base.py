@@ -126,3 +126,20 @@ def test_warehouse_filter(warehouse):
     assert warehouse.filter(schema_names=['schema0'], table_names=['not_existing']) == []
     assert warehouse.filter(schema_names=['schema0'], table_names=[]) == []
     assert len(warehouse.filter(schema_names=['schema0'])) == 10
+
+
+def test_warehouse_filter_stratify(warehouse):
+    schema_names = ['schema1', 'schema3', 'schema5']
+    table_names = ['table1', 'table3', 'table5']
+    tables = warehouse.filter(schema_names=schema_names, table_names=table_names, stratify=True)
+    assert [(t.schema_name, t.table_name) for t in tables] == [
+        ('schema1', 'table1'),
+        ('schema3', 'table1'),
+        ('schema5', 'table1'),
+        ('schema1', 'table3'),
+        ('schema3', 'table3'),
+        ('schema5', 'table3'),
+        ('schema1', 'table5'),
+        ('schema3', 'table5'),
+        ('schema5', 'table5')
+    ]
