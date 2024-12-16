@@ -232,7 +232,7 @@ def cli_file(
         ] = 'raw',
 ):
     """
-    Run extract load transform pipeline
+    Download and display file from Snowflake stage
     """
     Env.set(env)
     table: SnowflakeTable = Warehouse()[schema_name][table_name]
