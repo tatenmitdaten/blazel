@@ -209,13 +209,21 @@ def cli_timestamps(
 
 @cli.command(name='pipeline')
 def cli_pipeline(
-        env: Annotated[Env, Option(help="target environment")] = Env.dev
+        env: Annotated[Env, Option(help="target environment")] = Env.dev,
+        skip_el: Annotated[bool, Option(help="skip extract and load tasks")] = False,
+        skip_t: Annotated[bool, Option(help="skip transform tasks")] = False,
 ):
     """
     Run extract load transform pipeline
     """
     Env.set(env)
-    start_statemachine('Pipeline')
+    payload = {}
+    if skip_el:
+        payload['schema_names'] = []
+    if skip_t:
+        payload['args'] = ['x-skip']
+        payload['docs'] = ['x-skip']
+    start_statemachine('Pipeline', json.dumps(payload))
 
 
 @cli.command(name='file')
