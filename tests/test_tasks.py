@@ -44,6 +44,15 @@ def test_schedule(warehouse):
     assert el_job.load.table_name == 'table0'
 
 
+def test_schedule_empty(warehouse):
+    schedule_task = ScheduleTask(
+        database_name='sources',
+        schema_names=[]
+    )
+    schedule = schedule_task(warehouse)
+    assert schedule == {'schedule': []}
+
+
 @pytest.fixture(scope='session')
 def task_table(mocked_aws, parameters):
     dynamodb = boto3.client('dynamodb', region_name='eu-central-1')

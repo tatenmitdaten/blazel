@@ -279,6 +279,12 @@ class Schedule(Serializable):
     def __iter__(self) -> Iterator[ExtractLoadJob]:
         return iter(self.schedule)
 
+    @property
+    def as_dict(self) -> dict:
+        if self.schedule:
+            return super().as_dict
+        return {'schedule': []}
+
     @classmethod
     def error_schedule(cls, envs) -> 'Schedule':
         error_task = ErrorTask(
