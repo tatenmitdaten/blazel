@@ -10,6 +10,7 @@ from abc import abstractmethod
 from dataclasses import dataclass
 from dataclasses import field
 from typing import Callable
+from typing import ClassVar
 from typing import Generator
 from typing import Generic
 from typing import Iterator
@@ -190,7 +191,7 @@ class ExtractTask(TableTask):
         return table.extract_function(table, self)
 
     def get_time_range(self, table: ExtractLoadTableType) -> 'TimeRange':
-        return TimeRange(self, table)
+        return TimeRange.from_task(self, table)
 
     @classmethod
     def from_dict(cls, data: dict) -> 'ExtractTask':
@@ -348,7 +349,7 @@ class ScheduleTask(BaseTask[ExtractLoadWarehouseType]):
         return schedule.as_dict
 
     def get_time_range(self, table: ExtractLoadTableType) -> 'TimeRange':
-        return TimeRange(self, table)
+        return TimeRange.from_task(self, table)
 
     @classmethod
     def from_dict(cls, data: dict) -> 'ScheduleTask':
@@ -357,12 +358,17 @@ class ScheduleTask(BaseTask[ExtractLoadWarehouseType]):
         return super().from_dict(data)  # type: ignore
 
 
+@dataclass
 class TimeRange(Generic[ExtractLoadTableType]):
-    min_start_str = datetime.datetime(year=1900, month=1, day=1).strftime(default_timestamp_format)
-    max_end_str = datetime.datetime(year=2100, month=12, day=31).strftime(default_timestamp_format)
+    min_start_str: ClassVar[str] = datetime.datetime(year=1900, month=1, day=1).strftime(default_timestamp_format)
+    max_end_str: ClassVar[str] = datetime.datetime(year=2100, month=12, day=31).strftime(default_timestamp_format)
+    start: str | None
+    end: str | None
+    tzinfo: zoneinfo.ZoneInfo = zoneinfo.ZoneInfo('Europe/Berlin')
 
-    def __init__(self, task: ExtractTask | ScheduleTask, table: ExtractLoadTableType):
-        self.tzinfo = zoneinfo.ZoneInfo(table.options.timezone)
+    @classmethod
+    def from_task(cls, task: ExtractTask | ScheduleTask, table: ExtractLoadTableType) -> 'TimeRange':
+        tzinfo = zoneinfo.ZoneInfo(table.options.timezone)
 
         start = task.options.start
         end = task.options.end
@@ -371,11 +377,9 @@ class TimeRange(Generic[ExtractLoadTableType]):
                 start = table.get_latest_timestamp()
             if table.options.look_back_days:
                 interval = datetime.timedelta(days=table.options.look_back_days)
-                start_date = self._get_now_timestamp() - interval
+                start_date = cls._get_now_timestamp() - interval
                 start = start_date.strftime(default_timestamp_format)
-
-        self.start = start
-        self.end = end
+        return TimeRange(start, end, tzinfo)
 
     @property
     def start_str(self) -> str:
