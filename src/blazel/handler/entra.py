@@ -77,7 +77,9 @@ class EntraServiceHandler:
         client = get_secretsmanager_client()
         try:
             secret = client.get_secret_value(SecretId=self.secret_id)
-        except client.exceptions.ResourceNotFoundException:
+            if secret['SecretString'] == '{}':
+                raise ValueError('Empty secret')
+        except (client.exceptions.ResourceNotFoundException, ValueError):
             return self.init_token_cache()
         token_cache = msal.SerializableTokenCache()
         token_cache.deserialize(secret['SecretString'])
@@ -135,6 +137,11 @@ class SharepointHandler(EntraServiceHandler):
         'https://graph.microsoft.com/User.Read',
     ]
     base_url: ClassVar[str] = 'https://graph.microsoft.com/v1.0'
+    """
+    The site id is not part of the Sharepoint URL. To find the site id:
+    - Navigate to the Sharepoint site and open the developer tools (F12).
+    - Go to Console and enter: _spPageContextInfo.siteId
+    """
     site_id: str  # Sharepoint site id
 
     @property
