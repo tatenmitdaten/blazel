@@ -204,8 +204,9 @@ class SnowflakeTable(ExtractLoadTable[SnowflakeSchemaType, SnowflakeTableType, T
             'message': f'Deleted {counter} file(s) from {path}'
         }
 
-    def get_key(self, batch_number: int, file_number: int, suffix: str = 'csv.gz') -> str:
-        file_name = f'{self.table_name}_b{batch_number:02d}_f{file_number:02d}.{suffix}'
+    def get_key(self, batch: int | str, file_number: int, suffix: str = 'csv.gz') -> str:
+        batch = f'b{batch:02d}' if isinstance(batch, int) else batch
+        file_name = f'{self.table_name}_{batch}_f{file_number:02d}.{suffix}'
         return f'{self.schema_name}/{self.table_name}/{file_name}'
 
     @staticmethod

@@ -99,6 +99,10 @@ class TableOptions(BaseOptions):
     file_name: str | None = None
     use_tunnel: bool = False
     avg_row_size: int = 0
+    project: str | None = None
+    dataset_id: str | None = None
+    location: str | None = None
+    truncate: bool = True
 
 
 @dataclass_transform()

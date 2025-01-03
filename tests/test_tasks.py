@@ -1,3 +1,5 @@
+import datetime
+
 import boto3
 import pytest
 
@@ -8,6 +10,7 @@ from blazel.tasks import ExtractTask
 from blazel.tasks import ExtractLoadTable
 from blazel.tasks import ScheduleTask
 from blazel.tasks import TaskOptions
+from blazel.tasks import TimeRange
 
 
 @pytest.fixture
@@ -137,3 +140,11 @@ def test_register_extract_simple(warehouse):
         table_name='table0',
     )
     assert task(warehouse) == 'test'
+
+
+def test_time_range_get_batch():
+    time_range = TimeRange(start='2024-01-01', end='2024-01-03')
+    assert time_range.get_batch_date(0) == datetime.datetime.strptime('2024-01-01', '%Y-%m-%d')
+    assert time_range.get_batch_date(2) == datetime.datetime.strptime('2024-01-03', '%Y-%m-%d')
+    with pytest.raises(ValueError):
+        time_range.get_batch_date(3)

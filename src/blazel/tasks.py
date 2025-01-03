@@ -377,9 +377,19 @@ class TimeRange(Generic[ExtractLoadTableType]):
                 start = table.get_latest_timestamp()
             if table.options.look_back_days:
                 interval = datetime.timedelta(days=table.options.look_back_days)
-                start_date = cls._get_now_timestamp() - interval
+                start_date = cls._get_now_timestamp(tzinfo) - interval
                 start = start_date.strftime(default_timestamp_format)
         return TimeRange(start, end, tzinfo)
+
+    def get_batch_date(self, batch_number: int) -> datetime.datetime:
+        if self.start is None:
+            raise ValueError('start is required')
+        if self.end is None:
+            raise ValueError('end is required')
+        batch_date = self.start_date + datetime.timedelta(days=batch_number)
+        if batch_date > self.end_date:
+            raise ValueError('batch_date exceeds end_date')
+        return batch_date
 
     @property
     def start_str(self) -> str:
@@ -388,6 +398,14 @@ class TimeRange(Generic[ExtractLoadTableType]):
     @property
     def end_str(self) -> str:
         return self.end if self.end else self.max_end_str
+
+    @property
+    def start_date_str(self) -> str:
+        return self.start_date.strftime('%Y-%m-%d')
+
+    @property
+    def end_date_str(self) -> str:
+        return self.end_date.strftime('%Y-%m-%d')
 
     @property
     def start_date(self) -> datetime.datetime:
@@ -403,8 +421,9 @@ class TimeRange(Generic[ExtractLoadTableType]):
             date_str += 'T23:59:59'
         return self._parse_date(date_str)
 
-    def _get_now_timestamp(self):
-        return datetime.datetime.now(tz=self.tzinfo)
+    @staticmethod
+    def _get_now_timestamp(tzinfo: zoneinfo.ZoneInfo) -> datetime.datetime:
+        return datetime.datetime.now(tz=tzinfo)
 
     @staticmethod
     def _parse_date(date: str) -> datetime.datetime:
