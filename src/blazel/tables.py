@@ -297,6 +297,10 @@ class SnowflakeTable(ExtractLoadTable[SnowflakeSchemaType, SnowflakeTableType, T
     def get_now_timestamp() -> str:
         return datetime.datetime.now(ZoneInfo(default_timezone)).strftime(default_timestamp_format)
 
+    def truncate_table_stmt(self) -> str:
+        return f"""\
+        TRUNCATE TABLE IF EXISTS {self.table_uri}""".replace(INDENT, '')
+
     def update_load_date_stmt(self, suffix: str = '') -> str:
         if suffix not in ('', default_stage_suffix):
             raise ValueError(f'Invalid suffix: {suffix}')
@@ -312,7 +316,12 @@ class SnowflakeTable(ExtractLoadTable[SnowflakeSchemaType, SnowflakeTableType, T
         CREATE TABLE {self.table_uri}{default_stage_suffix} LIKE {self.table_uri}""".replace(INDENT, '')
 
     def load_stmt(self) -> dict[SQL, str]:
-        raise NotImplementedError
+        logger.info(f'Overwrite {self.table_uri}...')
+        return {
+            SQL.truncate: self.truncate_table_stmt(),
+            SQL.copy: self.copy_table_stmt(),
+            SQL.update: self.update_load_date_stmt(),
+        }
 
     def load_stmt_str(self) -> str:
         return ';\n'.join(self.load_stmt().values())
@@ -382,17 +391,7 @@ class SnowflakeTable(ExtractLoadTable[SnowflakeSchemaType, SnowflakeTableType, T
 
 
 class SnowflakeTableOverwrite(SnowflakeTable):
-    def truncate_table_stmt(self) -> str:
-        return f"""\
-        TRUNCATE TABLE IF EXISTS {self.table_uri}""".replace(INDENT, '')
-
-    def load_stmt(self) -> dict[SQL, str]:
-        logger.info(f'Overwrite {self.table_uri}...')
-        return {
-            SQL.truncate: self.truncate_table_stmt(),
-            SQL.copy: self.copy_table_stmt(),
-            SQL.update: self.update_load_date_stmt(),
-        }
+    pass
 
 
 class SnowflakeTableUpsert(SnowflakeTable):
@@ -407,6 +406,10 @@ class SnowflakeTableUpsert(SnowflakeTable):
         INSERT INTO {self.table_uri} SELECT * FROM {self.table_uri}{default_stage_suffix}""".replace(INDENT, '')
 
     def load_stmt(self) -> dict[SQL, str]:
+        if self.options.truncate:
+            logger.info(f'Explicit truncate in options for {self.table_uri}.')
+            return super(self).load_stmt()
+
         logger.info(f'Upsert {self.table_uri} using primary key {self.options.primary_key}...')
         return {
             SQL.drop: self.drop_staging_table_stmt(),
