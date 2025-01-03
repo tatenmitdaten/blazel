@@ -102,7 +102,8 @@ class TableOptions(BaseOptions):
     project: str | None = None
     dataset_id: str | None = None
     location: str | None = None
-    truncate: bool = True
+    truncate: bool | None = None
+    spreadsheet_id: str | None = None
 
 
 @dataclass_transform()
