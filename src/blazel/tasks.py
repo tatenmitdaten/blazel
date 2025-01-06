@@ -171,9 +171,13 @@ class CleanTask(TableTask):
 @dataclass
 class LoadTask(TableTask):
     task_type: str = field(default="LoadTask", init=False)
+    truncate: bool | None = None
 
     def __call__(self, warehouse: ExtractLoadWarehouseType, _=None) -> dict | None:
-        return self.table(warehouse).load_from_stage()
+        table = self.table(warehouse)
+        if self.truncate is not None:
+            table.options.truncate = self.truncate
+        return table.load_from_stage()
 
 
 @dataclass
@@ -243,6 +247,7 @@ class ExtractLoadJob(Serializable):
                 database_name=table.database_name,
                 schema_name=table.schema_name,
                 table_name=table.table_name,
+                truncate=table.options.truncate
             )
         )
 

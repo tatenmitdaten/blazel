@@ -381,13 +381,17 @@ class SnowflakeTable(ExtractLoadTable[SnowflakeSchemaType, SnowflakeTableType, T
             'message': messages
         }
 
-    def update_timestamp_field(self):
+    def update_timestamp_field(self, value: str | datetime.datetime | None = None):
+        if isinstance(value, datetime.datetime):
+            value = value.strftime(default_timestamp_format)
         with get_snowflake_connection(self.database_name) as snowflake_conn:
             with snowflake_conn.cursor() as snowflake_cursor:
                 if self.options.timestamp_field:
-                    snowflake_cursor.execute(f'SELECT MAX({self.options.timestamp_field}) FROM {self.table_uri}')
-                    result: tuple = snowflake_cursor.fetchone()  # type: ignore
-                    self.set_latest_timestamp(result[0])
+                    if value is None:
+                        snowflake_cursor.execute(f'SELECT MAX({self.options.timestamp_field}) FROM {self.table_uri}')
+                        result: tuple = snowflake_cursor.fetchone()  # type: ignore
+                        value = result[0]
+                    self.set_latest_timestamp(value)
 
 
 class SnowflakeTableOverwrite(SnowflakeTable):
@@ -408,7 +412,7 @@ class SnowflakeTableUpsert(SnowflakeTable):
     def load_stmt(self) -> dict[SQL, str]:
         if self.options.truncate:
             logger.info(f'Explicit truncate in options for {self.table_uri}.')
-            return super(self).load_stmt()
+            return super().load_stmt()
 
         logger.info(f'Upsert {self.table_uri} using primary key {self.options.primary_key}...')
         return {

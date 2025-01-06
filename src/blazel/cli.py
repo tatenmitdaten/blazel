@@ -197,6 +197,7 @@ def cli_run(
 def cli_timestamps(
         schema: Annotated[list[str] | None, Option(help="schema or all schemas if not provided")] = None,
         table: Annotated[list[str] | None, Option(help="table or all tables in schema if not provided")] = None,
+        value: Annotated[str | None, Option(help="timestamp value")] = None,
         env: Annotated[Env, Option(help="target environment")] = Env.dev
 ):
     """
@@ -204,7 +205,7 @@ def cli_timestamps(
     """
     Env.set(env)
     for table in Warehouse().filter(schema_names=schema, table_names=table):
-        cast(SnowflakeTable, table).update_timestamp_field()
+        cast(SnowflakeTable, table).update_timestamp_field(value)
 
 
 @cli.command(name='pipeline')
