@@ -248,7 +248,8 @@ class BaseWarehouse(Generic[BaseWarehouseType, BaseSchemaType, BaseTableType]):
         while warehouse:
             for schema_name in list(warehouse.keys()):
                 if stratify:
-                    result.append(warehouse[schema_name].pop(0))
+                    if warehouse[schema_name]:
+                        result.append(warehouse[schema_name].pop(0))
                     if not warehouse[schema_name]:
                         del warehouse[schema_name]
                 else:

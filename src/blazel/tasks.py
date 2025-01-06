@@ -413,18 +413,26 @@ class TimeRange(Generic[ExtractLoadTableType]):
         return self.end_date.strftime('%Y-%m-%d')
 
     @property
-    def start_date(self) -> datetime.datetime:
+    def start_datetime(self) -> datetime.datetime:
         date_str = self.start_str
         if len(date_str) == 10:
             date_str += 'T00:00:00'
         return self._parse_date(date_str)
 
     @property
-    def end_date(self) -> datetime.datetime:
+    def start_date(self) -> datetime.datetime:
+        return self.start_datetime
+
+    @property
+    def end_datetime(self) -> datetime.datetime:
         date_str = self.end_str
         if len(date_str) == 10:
             date_str += 'T23:59:59'
         return self._parse_date(date_str)
+
+    @property
+    def end_date(self) -> datetime.datetime:
+        return self.end_datetime
 
     @staticmethod
     def _get_now_timestamp(tzinfo: zoneinfo.ZoneInfo) -> datetime.datetime:
