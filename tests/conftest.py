@@ -3,8 +3,6 @@ import os
 import pytest
 from moto import mock_aws
 
-import re
-
 
 @pytest.fixture(scope='session')
 def monkeysession():

@@ -48,7 +48,7 @@ def _adapt_column_name(column_name: str) -> str:
     }
     for old, new in replacements.items():
         column_name = column_name.replace(old, new)
-    parts = column_name.split(' ')
+    parts: list[str] = column_name.split(' ')
     for i, part in enumerate(parts):
         if part.isupper():
             parts[i] = part.lower()
