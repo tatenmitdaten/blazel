@@ -3,22 +3,24 @@ import datetime
 import gzip
 import io
 import logging
-import time
+import os
 from dataclasses import dataclass
 from dataclasses import field
 from enum import Enum
 from io import BytesIO
 from io import StringIO
-from itertools import batched
 from pathlib import Path
 from typing import Any
 from typing import cast
 from typing import Generator
+from typing import Iterable
 from typing import TypeVar
 from zoneinfo import ZoneInfo
 
+import time
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
+from itertools import batched
 from snowflake.connector import connect
 from snowflake.connector import SnowflakeConnection
 from snowflake.connector.errors import ProgrammingError
@@ -254,10 +256,14 @@ class SnowflakeTable(ExtractLoadTable[SnowflakeSchemaType, SnowflakeTableType, T
             data = [row for row in reader]
         return data
 
+    def convert_to_data(self, rows_dicts: Iterable[dict[str, Any]]) -> Data:
+        for row in rows_dicts:
+            yield tuple(row.get(column_name) for column_name in self.column_names)
+
     def upload_to_stage(
             self,
             data: Data,
-            batch_number: int = 0,
+            batch: int | str = 0,
             max_file_size: int = 15 * 1024 * 1024,  # 15 Mb
             csv_batch_size: int = 25_000,
             total_rows: int = 0
@@ -268,7 +274,7 @@ class SnowflakeTable(ExtractLoadTable[SnowflakeSchemaType, SnowflakeTableType, T
             row_count += data_bytes.row_count
             files = data_bytes.file_number
             files_len += data_bytes.len
-            key = self.get_key(batch_number, data_bytes.file_number)
+            key = self.get_key(batch, data_bytes.file_number)
             bucket.put_object(Body=data_bytes.body, Key=key)
             logger.info(f'Uploaded {data_bytes.size} [{data_bytes.row_count} rows] to s3://{bucket.name}/{key}')
             if total_rows:
@@ -277,7 +283,7 @@ class SnowflakeTable(ExtractLoadTable[SnowflakeSchemaType, SnowflakeTableType, T
                     f'using {self.relative_time():.2%} of available time.'
                 )
         message = (
-            f'Task [{batch_number}] uploaded {size(files_len)} [{files} file(s), {row_count} rows] to s3://{bucket.name} '
+            f'Task [{batch}] uploaded {size(files_len)} [{files} file(s), {row_count} rows] to s3://{bucket.name} '
             f'using {self.relative_time():.2%} of available time.'
         )
         logger.info(message)
@@ -287,9 +293,10 @@ class SnowflakeTable(ExtractLoadTable[SnowflakeSchemaType, SnowflakeTableType, T
         if suffix not in ('', default_stage_suffix):
             raise ValueError(f'Invalid suffix: {suffix}')
         column_names = ', '.join(column.name for column in self)
+        stage = os.environ.get('DATABASE_STAGE', 'public.stage')
         return f"""\
         COPY INTO {self.table_uri}{suffix} ({column_names})
-        FROM @{self.database_name}.public.stage/{self.schema_name}/{self.table_name}/
+        FROM @{self.database_name}.{stage}/{self.schema_name}/{self.table_name}/
         FILE_FORMAT = ( TYPE = CSV FIELD_DELIMITER = ';' EMPTY_FIELD_AS_NULL = TRUE SKIP_BLANK_LINES = TRUE TRIM_SPACE = TRUE FIELD_OPTIONALLY_ENCLOSED_BY = '"' )""".replace(
             INDENT, '')
 
@@ -394,16 +401,31 @@ class SnowflakeTable(ExtractLoadTable[SnowflakeSchemaType, SnowflakeTableType, T
                     self.set_latest_timestamp(value)
 
 
-class SnowflakeTableOverwrite(SnowflakeTable):
-    pass
-
-
 class SnowflakeTableUpsert(SnowflakeTable):
 
-    def delete_from_table_stmt(self) -> str:
+    def delete_by_primary_key(self) -> str:
         return f"""\
-        DELETE FROM {self.table_uri} WHERE {self.options.primary_key} IN (SELECT {self.options.primary_key} FROM {self.table_uri}{default_stage_suffix})""".replace(
-            INDENT, '')
+        DELETE FROM {self.table_uri} WHERE {self.options.primary_key} IN (SELECT {self.options.primary_key}
+        FROM {self.table_uri}{default_stage_suffix})""".replace(INDENT, '')
+
+    def delete_by_datetime_range(self) -> str:
+        return f"""\
+        DELETE FROM {self.table_uri}
+        USING (
+            SELECT
+                MIN({self.options.timestamp_key}) AS min_ts,
+                MAX({self.options.timestamp_key}) AS max_ts
+            FROM {self.table_uri}{default_stage_suffix}
+        ) AS range
+        WHERE ({self.options.timestamp_key} BETWEEN range.min_ts AND range.max_ts)
+            OR {self.options.timestamp_key} IS NULL""".replace(INDENT, '')
+
+    def delete_from_table_stmt(self) -> str:
+        if self.options.primary_key:
+            return self.delete_by_primary_key()
+        if self.options.timestamp_key:
+            return self.delete_by_datetime_range()
+        raise ValueError('Primary key or timestamp_key is required for upsert.')
 
     def insert_into_table_stmt(self) -> str:
         return f"""\
@@ -434,10 +456,10 @@ class SnowflakeWarehouse(ExtractLoadWarehouse[SnowflakeWarehouseType, SnowflakeS
 
     def table_class(self, table_serialized: dict[str, dict | None]) -> type[SnowflakeTableType]:
         options = table_serialized.get('options') or {}
-        has_primary_key = options.get('primary_key') is not None
-        if has_primary_key:
+        has_upsert_key = options.get('primary_key') is not None or options.get('timestamp_key') is not None
+        if has_upsert_key:
             return cast(type[SnowflakeTableType], SnowflakeTableUpsert)
-        return cast(type[SnowflakeTableType], SnowflakeTableOverwrite)
+        return SnowflakeTable
 
     def create_tables(
             self,

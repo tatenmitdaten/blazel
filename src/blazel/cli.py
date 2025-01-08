@@ -15,10 +15,10 @@ from blazel.config import Env
 from blazel.tables import SnowflakeTable
 from blazel.tables import SnowflakeWarehouse
 from blazel.tasks import ExtractLoadJob
-from blazel.tasks import ExtractTask
 from blazel.tasks import Schedule
 from blazel.tasks import ScheduleTask
 from blazel.tasks import TaskOptions
+from blazel.tasks import TimeRange
 
 cli = typer.Typer(
     add_completion=False,
@@ -63,8 +63,8 @@ def cli_clean(
 
 @test.command(name='extract')
 def cli_extract(
-        schema: Annotated[str, Option(help="schema")],
-        table: Annotated[str, Option(help="table")],
+        schema: Annotated[list[str] | None, Option(help="schema or all schemas if not provided")] = None,
+        table: Annotated[list[str] | None, Option(help="table or all tables in schema if not provided")] = None,
         start: Annotated[str | None, Option(help="start date or datetime")] = None,
         end: Annotated[str | None, Option(help="end date or datetime")] = None,
         limit: Annotated[int, Option(help="limit number of rows to extract")] = 0,
@@ -75,14 +75,17 @@ def cli_extract(
     """
     Env.set(env)
     wh = Warehouse()
-    task = cast(ExtractTask, ExtractLoadJob.from_table(wh[schema][table]).extract[0])
-    task.options = TaskOptions(
-        start=start,
-        end=end,
-        limit=limit,
-    )
-    response = task(Warehouse())
-    rich.print(response)
+    for table in wh.filter(schema_names=schema, table_names=table):
+        batches = TimeRange(start, end).get_batch_n() if table.options.timestamp_key else 1
+        options = TaskOptions(
+            start=start,
+            end=end,
+            limit=limit,
+            batches=batches
+        )
+        for task in ExtractLoadJob.from_table(table, options).extract:
+            response = task(wh)
+            rich.print(response)
 
 
 @test.command(name='load')
@@ -187,8 +190,10 @@ def cli_run(
         tables = warehouse.filter(schema_names=schema, table_names=table)
         schedule = Schedule.from_tables(tables, options)
         for job in schedule.schedule:
+            print(f'\n\033[96mProcessing "{job.clean.table_uri}"\033[0m')
             rich.print(job.clean(warehouse))
             for task in job.extract:
+                rich.print(f'Extract options: {task.options}')
                 rich.print(task(warehouse))
             rich.print(job.load(warehouse))
 

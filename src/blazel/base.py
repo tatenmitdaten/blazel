@@ -90,6 +90,7 @@ class TableOptions(BaseOptions):
     total_rows: int = 0
     file_format: str = 'csv'
     primary_key: str | None = None
+    timestamp_key: str | None = None
     batch_key: str | None = None
     source_name: str | None = None
     where_clause: str | None = None

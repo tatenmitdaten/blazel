@@ -9,10 +9,12 @@ from abc import ABC
 from abc import abstractmethod
 from dataclasses import dataclass
 from dataclasses import field
+from typing import Any
 from typing import Callable
 from typing import ClassVar
 from typing import Generator
 from typing import Generic
+from typing import Iterable
 from typing import Iterator
 from typing import TypeVar
 
@@ -54,10 +56,6 @@ class ExtractLoadTable(
 
     @abstractmethod
     def load_from_stage(self) -> dict | None:
-        pass
-
-    @abstractmethod
-    def upload_to_stage(self, data: Data):
         pass
 
     @abstractmethod
@@ -219,11 +217,19 @@ class ExtractLoadJob(Serializable):
         return super().from_dict(data)
 
     @classmethod
-    def from_table(cls, table: ExtractLoadTable, options: TaskOptions | None = None) -> 'ExtractLoadJob':
+    def from_table(cls, table: ExtractLoadTable, task_options: TaskOptions | None = None) -> 'ExtractLoadJob':
         job_id = uuid.uuid4().hex
-        extract_options = copy.deepcopy(options) or TaskOptions()
-        extract_options.batches = table.options.batches
-        extract_options.total_rows = table.options.total_rows
+        options = copy.deepcopy(task_options) or TaskOptions()
+        if table.options.look_back_days:
+            options.batches = table.options.look_back_days if table.options.timestamp_key else 1
+            tzinfo = zoneinfo.ZoneInfo(table.options.timezone)
+            end_datetime = datetime.datetime.now(tz=tzinfo)
+            start_datetime = end_datetime - datetime.timedelta(days=table.options.look_back_days)
+            options.start = start_datetime.strftime('%Y-%m-%d')
+            options.end = end_datetime.strftime('%Y-%m-%d')
+        options.batches = max(options.batches, table.options.batches)
+        options.total_rows = table.options.total_rows
+
         return cls(
             job_id=job_id,
             clean=CleanTask(
@@ -239,8 +245,8 @@ class ExtractLoadJob(Serializable):
                     schema_name=table.schema_name,
                     table_name=table.table_name,
                     task_number=task_number,
-                    options=extract_options,
-                ) for task_number in range(extract_options.batches)
+                    options=options,
+                ) for task_number in range(options.batches)
             ],
             load=LoadTask(
                 job_id=job_id,
@@ -374,23 +380,20 @@ class TimeRange(Generic[ExtractLoadTableType]):
     @classmethod
     def from_task(cls, task: ExtractTask | ScheduleTask, table: ExtractLoadTableType) -> 'TimeRange':
         tzinfo = zoneinfo.ZoneInfo(table.options.timezone)
-
         start = task.options.start
         end = task.options.end
-        if start is None:
-            if table.options.timestamp_field:
-                start = table.get_latest_timestamp()
-            if table.options.look_back_days:
-                interval = datetime.timedelta(days=table.options.look_back_days)
-                start_date = cls._get_now_timestamp(tzinfo) - interval
-                start = start_date.strftime(default_timestamp_format)
+        if start is None and table.options.timestamp_field:
+            start = table.get_latest_timestamp()
         return TimeRange(start, end, tzinfo)
 
-    def get_batch_date(self, batch_number: int) -> datetime.datetime:
-        if self.start is None:
-            raise ValueError('start is required')
-        if self.end is None:
-            raise ValueError('end is required')
+    def get_batch_n(self) -> int:
+        if self.start is None or self.end is None:
+            raise ValueError('Both start_date and end_date are required for batched tasks')
+        return (self.end_date - self.start_date).days + 1
+
+    def get_batch_date(self, batch_number: int) -> datetime.date:
+        if self.start is None or self.end is None:
+            raise ValueError('Both start_date and end_date are required for batched tasks')
         batch_date = self.start_date + datetime.timedelta(days=batch_number)
         if batch_date > self.end_date:
             raise ValueError('batch_date exceeds end_date')
@@ -420,8 +423,8 @@ class TimeRange(Generic[ExtractLoadTableType]):
         return self._parse_date(date_str)
 
     @property
-    def start_date(self) -> datetime.datetime:
-        return self.start_datetime
+    def start_date(self) -> datetime.date:
+        return datetime.date(self.start_datetime.year, self.start_datetime.month, self.start_datetime.day)
 
     @property
     def end_datetime(self) -> datetime.datetime:
@@ -431,8 +434,8 @@ class TimeRange(Generic[ExtractLoadTableType]):
         return self._parse_date(date_str)
 
     @property
-    def end_date(self) -> datetime.datetime:
-        return self.end_datetime
+    def end_date(self) -> datetime.date:
+        return datetime.date(self.end_datetime.year, self.end_datetime.month, self.end_datetime.day)
 
     @staticmethod
     def _get_now_timestamp(tzinfo: zoneinfo.ZoneInfo) -> datetime.datetime:
