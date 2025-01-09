@@ -220,7 +220,7 @@ class ExtractLoadJob(Serializable):
     def from_table(cls, table: ExtractLoadTable, task_options: TaskOptions | None = None) -> 'ExtractLoadJob':
         job_id = uuid.uuid4().hex
         options = copy.deepcopy(task_options) or TaskOptions()
-        if table.options.look_back_days:
+        if options.start is None and table.options.look_back_days:
             options.batches = table.options.look_back_days if table.options.timestamp_key else 1
             tzinfo = zoneinfo.ZoneInfo(table.options.timezone)
             end_datetime = datetime.datetime.now(tz=tzinfo)
@@ -441,12 +441,12 @@ class TimeRange(Generic[ExtractLoadTableType]):
     def _get_now_timestamp(tzinfo: zoneinfo.ZoneInfo) -> datetime.datetime:
         return datetime.datetime.now(tz=tzinfo)
 
-    @staticmethod
-    def _parse_date(date: str) -> datetime.datetime:
+    def _parse_date(self, datetime_str: str) -> datetime.datetime:
         try:
-            return datetime.datetime.strptime(date, default_timestamp_format)
+            datetime_obj = datetime.datetime.strptime(datetime_str, default_timestamp_format)
+            return datetime_obj.replace(tzinfo=self.tzinfo)
         except ValueError:
-            raise ValueError(f'Unable to parse date "{date}". Required format: {default_timestamp_format}')
+            raise ValueError(f'Unable to parse date "{datetime_str}". Required format: {default_timestamp_format}')
 
 
 class TaskFactory(Generic[BaseTaskType]):

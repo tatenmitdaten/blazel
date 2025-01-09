@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 from typing import Annotated
 from typing import cast
 
@@ -216,19 +217,36 @@ def cli_timestamps(
 @cli.command(name='pipeline')
 def cli_pipeline(
         env: Annotated[Env, Option(help="target environment")] = Env.dev,
-        skip_el: Annotated[bool, Option(help="skip extract and load tasks")] = False,
-        skip_t: Annotated[bool, Option(help="skip transform tasks")] = False,
+        el_run: Annotated[bool, Option(help="run extract load")] = True,
+        dbt_run: Annotated[
+            str, Option(click_type=click.Choice(['build', 'test', 'skip']), help="display raw data")
+        ] = 'build',
+        dbt_docs: Annotated[bool, Option(help="create dbt docs")] = True,
 ):
     """
     Run extract load transform pipeline
     """
     Env.set(env)
+    dbt = []
+    match dbt_run:
+        case 'build':
+            dbt.append({'args': ['build', '--target', env.value]})
+        case 'test':
+            dbt.append({'args': ['run', '--target', 'dev', '--vars', 'materialized: view']})
+        case 'skip':
+            pass
+    if dbt_docs:
+        dbt.append({'args': ['docs', 'generate']})
+
     payload = {}
-    if skip_el:
-        payload['schema_names'] = []
-    if skip_t:
-        payload['args'] = ['x-skip']
-        payload['docs'] = ['x-skip']
+    if dbt:
+        payload['transform'] = {
+            'dbt': dbt,
+        }
+    if el_run:
+        payload['extract_load'] = {
+            'task_type': 'ScheduleTask',
+        }
     start_statemachine('Pipeline', json.dumps(payload))
 
 

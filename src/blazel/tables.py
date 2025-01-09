@@ -25,6 +25,7 @@ from snowflake.connector import connect
 from snowflake.connector import SnowflakeConnection
 from snowflake.connector.errors import ProgrammingError
 
+from blazel.base import Column
 from blazel.clients import get_extract_time_table
 from blazel.clients import get_snowflake_secret
 from blazel.clients import get_snowflake_staging_bucket
@@ -294,11 +295,39 @@ class SnowflakeTable(ExtractLoadTable[SnowflakeSchemaType, SnowflakeTableType, T
             raise ValueError(f'Invalid suffix: {suffix}')
         column_names = ', '.join(column.name for column in self)
         stage = os.environ.get('DATABASE_STAGE', 'public.stage')
-        return f"""\
-        COPY INTO {self.table_uri}{suffix} ({column_names})
-        FROM @{self.database_name}.{stage}/{self.schema_name}/{self.table_name}/
-        FILE_FORMAT = ( TYPE = CSV FIELD_DELIMITER = ';' EMPTY_FIELD_AS_NULL = TRUE SKIP_BLANK_LINES = TRUE TRIM_SPACE = TRUE FIELD_OPTIONALLY_ENCLOSED_BY = '"' )""".replace(
-            INDENT, '')
+
+        match self.options.file_format:
+            case 'csv':
+                copy_table_stmt = f"""\
+                COPY INTO {self.table_uri}{suffix} ({column_names})
+                FROM @{self.database_name}.{stage}/{self.schema_name}/{self.table_name}/
+                FILE_FORMAT = ( 
+                    TYPE = CSV
+                    FIELD_DELIMITER = ';'
+                    EMPTY_FIELD_AS_NULL = TRUE
+                    SKIP_BLANK_LINES = TRUE
+                    TRIM_SPACE = TRUE
+                    FIELD_OPTIONALLY_ENCLOSED_BY = '"'
+                )""".replace(INDENT, '')
+            case 'parquet':
+                def format_timestamp(column: Column) -> str:
+                    if column.dtype == 'timestamp':
+                        return f'TO_TIMESTAMP_NTZ($1:{column.name}::int, 6)'
+                    else:
+                        return f'$1:{column.name}::{column.dtype}'
+
+                conv_columns_str = ',\n'.join(format_timestamp(column) for column in self)
+                copy_table_stmt = f"""\
+                COPY INTO {self.table_uri}{suffix} ({column_names}) FROM (
+                    SELECT {conv_columns_str}
+                    FROM @{self.database_name}.{stage}/{self.schema_name}/{self.table_name}/
+                )
+                FILE_FORMAT = (
+                    TYPE = PARQUET
+                )""".replace(INDENT, '')
+            case _:
+                raise ValueError(f"Unsupported file_format '{self.options.file_format}'")
+        return copy_table_stmt
 
     @staticmethod
     def get_now_timestamp() -> str:
