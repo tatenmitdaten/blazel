@@ -113,7 +113,7 @@ class PowerBIHandler(EntraServiceHandler):
         'https://analysis.windows.net/powerbi/api/Dataset.ReadWrite.All',
     ]
 
-    def refresh_dataset(self, dataset_id: str) -> dict | None:
+    def refresh_dataset(self, dataset_id: str) -> dict:
         url = f"{self.base_url}/datasets/{dataset_id}/refreshes"
         response = requests.post(url, headers=self.headers)
         message = {}

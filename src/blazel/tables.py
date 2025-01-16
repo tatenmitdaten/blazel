@@ -208,6 +208,8 @@ class SnowflakeTable(ExtractLoadTable[SnowflakeSchemaType, SnowflakeTableType, T
         }
 
     def get_key(self, batch: int | str, file_number: int, suffix: str = 'csv.gz') -> str:
+        if self.options.stage_file_name:
+            return self.options.stage_file_name
         batch = f'b{batch:02d}' if isinstance(batch, int) else batch
         file_name = f'{self.table_name}_{batch}_f{file_number:02d}.{suffix}'
         return f'{self.schema_name}/{self.table_name}/{file_name}'
@@ -257,9 +259,10 @@ class SnowflakeTable(ExtractLoadTable[SnowflakeSchemaType, SnowflakeTableType, T
             data = [row for row in reader]
         return data
 
-    def convert_to_data(self, rows_dicts: Iterable[dict[str, Any]]) -> Data:
+    def convert_to_data(self, rows_dicts: Iterable[dict[str, Any]]) -> Generator[tuple[Any, ...], None, None]:
         for row in rows_dicts:
             yield tuple(row.get(column_name) for column_name in self.column_names)
+        return
 
     def upload_to_stage(
             self,
@@ -290,25 +293,39 @@ class SnowflakeTable(ExtractLoadTable[SnowflakeSchemaType, SnowflakeTableType, T
         logger.info(message)
         return {'message': message}
 
+    def file_format(self) -> str:
+        if self.options.stage_file_format:
+            return f"FORMAT_NAME = '{self.database_name}.public.{self.options.stage_file_format}'"
+        match self.options.file_format:
+            case 'csv':
+                return """
+                TYPE = CSV
+                FIELD_DELIMITER = ';'
+                SKIP_BLANK_LINES = TRUE
+                TRIM_SPACE = TRUE
+                FIELD_OPTIONALLY_ENCLOSED_BY = '"'
+                """.replace(INDENT, '')
+            case 'parquet':
+                return "TYPE = PARQUET"
+            case _:
+                raise ValueError(f"Unsupported file_format '{self.options.file_format}'")
+
     def copy_table_stmt(self, suffix='') -> str:
         if suffix not in ('', default_stage_suffix):
             raise ValueError(f'Invalid suffix: {suffix}')
         column_names = ', '.join(column.name for column in self)
         stage = os.environ.get('DATABASE_STAGE', 'public.stage')
+        if self.options.stage_file_name:
+            stage_files = f'{self.database_name}.{stage}/{self.options.stage_file_name}'
+        else:
+            stage_files = f'{self.database_name}.{stage}/{self.schema_name}/{self.table_name}/'
 
         match self.options.file_format:
             case 'csv':
                 copy_table_stmt = f"""\
                 COPY INTO {self.table_uri}{suffix} ({column_names})
-                FROM @{self.database_name}.{stage}/{self.schema_name}/{self.table_name}/
-                FILE_FORMAT = ( 
-                    TYPE = CSV
-                    FIELD_DELIMITER = ';'
-                    EMPTY_FIELD_AS_NULL = TRUE
-                    SKIP_BLANK_LINES = TRUE
-                    TRIM_SPACE = TRUE
-                    FIELD_OPTIONALLY_ENCLOSED_BY = '"'
-                )""".replace(INDENT, '')
+                FROM @{stage_files}
+                FILE_FORMAT = ( {self.file_format()} )""".replace(INDENT, '')
             case 'parquet':
                 def format_timestamp(column: Column) -> str:
                     if column.dtype == 'timestamp':
@@ -320,11 +337,9 @@ class SnowflakeTable(ExtractLoadTable[SnowflakeSchemaType, SnowflakeTableType, T
                 copy_table_stmt = f"""\
                 COPY INTO {self.table_uri}{suffix} ({column_names}) FROM (
                     SELECT {conv_columns_str}
-                    FROM @{self.database_name}.{stage}/{self.schema_name}/{self.table_name}/
+                    FROM @{stage_files}
                 )
-                FILE_FORMAT = (
-                    TYPE = PARQUET
-                )""".replace(INDENT, '')
+                FILE_FORMAT = ( {self.file_format()} )""".replace(INDENT, '')
             case _:
                 raise ValueError(f"Unsupported file_format '{self.options.file_format}'")
         return copy_table_stmt
@@ -434,8 +449,9 @@ class SnowflakeTableUpsert(SnowflakeTable):
 
     def delete_by_primary_key(self) -> str:
         return f"""\
-        DELETE FROM {self.table_uri} WHERE {self.options.primary_key} IN (SELECT {self.options.primary_key}
-        FROM {self.table_uri}{default_stage_suffix})""".replace(INDENT, '')
+        DELETE FROM {self.table_uri} WHERE {self.options.primary_key} IN (
+        SELECT {self.options.primary_key} FROM {self.table_uri}{default_stage_suffix}
+        )""".replace(INDENT, '')
 
     def delete_by_datetime_range(self) -> str:
         return f"""\
@@ -488,7 +504,7 @@ class SnowflakeWarehouse(ExtractLoadWarehouse[SnowflakeWarehouseType, SnowflakeS
         has_upsert_key = options.get('primary_key') is not None or options.get('timestamp_key') is not None
         if has_upsert_key:
             return cast(type[SnowflakeTableType], SnowflakeTableUpsert)
-        return SnowflakeTable
+        return cast(type[SnowflakeTableType], SnowflakeTable)
 
     def create_tables(
             self,
@@ -499,24 +515,31 @@ class SnowflakeWarehouse(ExtractLoadWarehouse[SnowflakeWarehouseType, SnowflakeS
     ):
         with get_snowflake_connection(self.database_name) as snowflake_conn:
             with snowflake_conn.cursor() as snowflake_cursor:
-                tables = self.filter(schema_names, table_names)
-                for table in tables:
-                    create_stmt = table.create_table_stmt()
-                    if save_files:
-                        path = Path('sql') / str(table.schema_name)
-                        path.mkdir(exist_ok=True)
-                        file = path / f'{table.table_name}.sql'
-                        with file.open('w', encoding='utf-8') as f:
-                            f.write(create_stmt)
-                    drop_stmt, create_stmt = create_stmt.split(';')
-                    if overwrite:
-                        snowflake_cursor.execute(drop_stmt)
-                        logger.info(f'Dropped {table.table_uri}.')
-                    try:
-                        snowflake_cursor.execute(create_stmt)
-                        logger.info(f'Created {table.table_uri}.')
-                    except ProgrammingError as e:
-                        if e.errno == 2002:
-                            logger.info(f'Table {table.table_uri} exists. Skipping.')
-                        else:
-                            raise
+                schemas = self.filter_schemas(schema_names)
+                for schema in schemas:
+                    schema_uri = f'{self.database_name}.{schema.schema_name}'
+                    if table_names is None and overwrite:
+                        logger.info(f'Dropped {schema_uri}.')
+                        snowflake_cursor.execute(f'DROP SCHEMA IF EXISTS {schema_uri} CASCADE')
+                        overwrite = False
+                    snowflake_cursor.execute(f'CREATE SCHEMA IF NOT EXISTS {schema_uri}')
+                    for table in schema.filter_tables(table_names):
+                        create_stmt = table.create_table_stmt()
+                        if save_files:
+                            path = Path('sql') / str(table.schema_name)
+                            path.mkdir(exist_ok=True)
+                            file = path / f'{table.table_name}.sql'
+                            with file.open('w', encoding='utf-8') as f:
+                                f.write(create_stmt)
+                        drop_stmt, create_stmt = create_stmt.split(';')
+                        if overwrite:
+                            snowflake_cursor.execute(drop_stmt)
+                            logger.info(f'Dropped {table.table_uri}.')
+                        try:
+                            snowflake_cursor.execute(create_stmt)
+                            logger.info(f'Created {table.table_uri}.')
+                        except ProgrammingError as e:
+                            if e.errno == 2002:
+                                logger.info(f'Table {table.table_uri} exists. Skipping.')
+                            else:
+                                raise

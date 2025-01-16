@@ -1,7 +1,6 @@
 import json
 import logging
 import os
-import re
 from typing import Annotated
 from typing import cast
 
@@ -10,6 +9,7 @@ import click
 import rich
 import rich.table
 import typer
+from snowflake.connector import ProgrammingError
 from typer import Option
 
 from blazel.config import Env
@@ -64,8 +64,12 @@ def cli_clean(
 
 @test.command(name='extract')
 def cli_extract(
-        schema: Annotated[list[str] | None, Option(help="schema or all schemas if not provided")] = None,
-        table: Annotated[list[str] | None, Option(help="table or all tables in schema if not provided")] = None,
+        schema_names: Annotated[
+            list[str] | None, Option('--schema', help="schema or all schemas if not provided")
+        ] = None,
+        table_names: Annotated[
+            list[str] | None, Option('--table', help="table or all tables in schema if not provided")
+        ] = None,
         start: Annotated[str | None, Option(help="start date or datetime")] = None,
         end: Annotated[str | None, Option(help="end date or datetime")] = None,
         limit: Annotated[int, Option(help="limit number of rows to extract")] = 0,
@@ -76,7 +80,7 @@ def cli_extract(
     """
     Env.set(env)
     wh = Warehouse()
-    for table in wh.filter(schema_names=schema, table_names=table):
+    for table in wh.filter(schema_names=schema_names, table_names=table_names):
         batches = TimeRange(start, end).get_batch_n() if table.options.timestamp_key else 1
         options = TaskOptions(
             start=start,
@@ -91,17 +95,29 @@ def cli_extract(
 
 @test.command(name='load')
 def cli_load(
-        schema: Annotated[str, Option(help="schema")],
-        table: Annotated[str, Option(help="table")],
+        schema_names: Annotated[
+            list[str] | None, Option('--schema', help="schema or all schemas if not provided")
+        ] = None,
+        table_names: Annotated[
+            list[str] | None, Option('--table', help="table or all tables in schema if not provided")
+        ] = None,
+        table_prefix: Annotated[str | None, Option(help="table prefix")] = None,
         env: Annotated[Env, Option(help="target environment")] = Env.dev,
+        stop_on_error: Annotated[bool, Option(help="stop on error")] = True,
 ):
     """
     Load data from staging bucket to Snowflake
     """
     Env.set(env)
     wh = Warehouse()
-    response = ExtractLoadJob.from_table(wh[schema][table]).load(wh)
-    rich.print(response)
+    for table in wh.filter(schema_names=schema_names, table_names=table_names):
+        if table_prefix and not table.table_name.startswith(table_prefix):
+            continue
+        try:
+            response = ExtractLoadJob.from_table(table).load(wh)
+            rich.print(response)
+        except ProgrammingError as e:
+            print(e)
 
 
 @test.command(name='schedule')

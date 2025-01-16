@@ -144,7 +144,7 @@ def test_register_extract_simple(warehouse):
 
 def test_time_range_get_batch():
     time_range = TimeRange(start='2024-01-01', end='2024-01-03')
-    assert time_range.get_batch_date(0) == datetime.datetime.strptime('2024-01-01', '%Y-%m-%d')
-    assert time_range.get_batch_date(2) == datetime.datetime.strptime('2024-01-03', '%Y-%m-%d')
+    assert time_range.get_batch_date(0) == datetime.date(2024, 1, 1)
+    assert time_range.get_batch_date(2) == datetime.date(2024, 1, 3)
     with pytest.raises(ValueError):
         time_range.get_batch_date(3)

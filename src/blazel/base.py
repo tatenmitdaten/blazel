@@ -105,6 +105,8 @@ class TableOptions(BaseOptions):
     location: str | None = None
     truncate: bool | None = None
     spreadsheet_id: str | None = None
+    stage_file_name: str | None = None
+    stage_file_format: str | None = None
 
 
 @dataclass_transform()
@@ -117,6 +119,9 @@ class BaseTable(Generic[BaseSchemaType, BaseTableType]):
 
     def __iter__(self):
         return iter(self.columns.values())
+
+    def add_column(self, column: Column):
+        self.columns[column.name] = column
 
     @property
     def database_name(self) -> str:
@@ -172,13 +177,27 @@ class BaseSchema(Generic[BaseWarehouseType, BaseSchemaType, BaseTableType]):
     def __iter__(self) -> Iterator[BaseTableType]:
         return iter(self.tables.values())
 
+    def __setitem__(self, key, value) -> None:
+        raise NotImplementedError('Use add_table() to add a table to a schema')
+
     def __getitem__(self, item) -> BaseTableType:
         try:
             return self.tables[item]
         except KeyError:
             raise KeyError(f'No table named {item}')
 
-    def filter(self, table_names: set[str] | list[str] | None = None) -> list[BaseTableType]:
+    def add_table(self, table: BaseTableType):
+        self.tables[table.table_name] = table
+
+    def drop_table(self, table: BaseTableType | str):
+        table_name = table.table_name if isinstance(table, BaseTable) else table
+        if table_name in self.tables:
+            del self.tables[table_name]
+
+    def filter_tables(
+            self,
+            table_names: set[str] | list[str] | None = None
+    ) -> list[BaseTableType]:
         tables = []
         if table_names is not None:
             table_names = [table_name.lower() for table_name in table_names]
@@ -217,11 +236,22 @@ class BaseWarehouse(Generic[BaseWarehouseType, BaseSchemaType, BaseTableType]):
     def __iter__(self) -> Iterator[BaseSchemaType]:
         return iter(self.schemas.values())
 
+    def __setitem__(self, key, value) -> None:
+        raise NotImplementedError('Use add_schema() to add a schema to a warehouse')
+
     def __getitem__(self, item) -> BaseSchemaType:
         try:
             return self.schemas[item]
         except KeyError:
             raise KeyError(f'No schema named {item}')
+
+    def add_schema(self, schema: BaseSchemaType):
+        self.schemas[schema.schema_name] = schema
+
+    def drop_schema(self, schema: BaseSchemaType | str):
+        schema_name = schema.schema_name if isinstance(schema, BaseSchema) else schema
+        if schema_name in self.schemas:
+            del self.schemas[schema_name]
 
     @property
     def database_name(self) -> str:
@@ -230,20 +260,26 @@ class BaseWarehouse(Generic[BaseWarehouseType, BaseSchemaType, BaseTableType]):
     def table_class(self, table_serialized: dict[str, dict | None]) -> type[BaseTableType]:
         return cast(type[BaseTableType], BaseTable)
 
+    def filter_schemas(
+            self,
+            schema_names: set[str] | list[str] | None = None
+    ) -> list[BaseSchemaType]:
+        if schema_names is not None:
+            schema_names = [schema_name.lower() for schema_name in schema_names]
+        return [
+            schema for schema in self
+            if schema_names is None or schema.schema_name in schema_names
+        ]
+
     def filter(
             self,
             schema_names: set[str] | list[str] | None = None,
             table_names: set[str] | list[str] | None = None,
             stratify: bool = False
     ) -> list[BaseTableType]:
-        if schema_names is not None:
-            schema_names = [schema_name.lower() for schema_name in schema_names]
         warehouse = {
-            schema.schema_name: [
-                table for table in schema.filter(table_names)
-            ]
-            for schema in self
-            if schema_names is None or schema.schema_name in schema_names
+            schema.schema_name: [table for table in schema.filter_tables(table_names)]
+            for schema in self.filter_schemas(schema_names)
         }
         result: list[BaseTableType] = []
         while warehouse:
@@ -298,7 +334,7 @@ class BaseWarehouse(Generic[BaseWarehouseType, BaseSchemaType, BaseTableType]):
                 file = Path(os.environ['TABLES_YAML_PATH'])
             else:
                 file = Path('/var/task/tables.yaml')
-            logging.getLogger().info(f'Using table definition file "{file.absolute()}"')
+            logging.getLogger().debug(f'Using table definition file "{file.absolute()}"')
         if not file.exists():
             raise FileNotFoundError(f'File "{file.absolute()}" not found. Cannot read table definitions.')
         return file
@@ -319,6 +355,9 @@ class BaseWarehouse(Generic[BaseWarehouseType, BaseSchemaType, BaseTableType]):
         return yaml.dump(self.serialized, sort_keys=False, allow_unicode=True, width=float('inf'))
 
     def to_yaml_file(self, file: Path | str | None = None):
-        file = self.get_yaml_file_path(file)
+        if isinstance(file, str):
+            file = Path(file)
+        if file is None:
+            file = self.get_yaml_file_path()
         with file.open('w') as f:
             f.write(self.as_yaml)

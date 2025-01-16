@@ -9,12 +9,10 @@ from abc import ABC
 from abc import abstractmethod
 from dataclasses import dataclass
 from dataclasses import field
-from typing import Any
 from typing import Callable
 from typing import ClassVar
 from typing import Generator
 from typing import Generic
-from typing import Iterable
 from typing import Iterator
 from typing import TypeVar
 
@@ -192,7 +190,7 @@ class ExtractTask(TableTask):
             table.get_remaining_time_in_millis = context.get_remaining_time_in_millis
         return table.extract_function(table, self)
 
-    def get_time_range(self, table: ExtractLoadTableType) -> 'TimeRange':
+    def get_timerange(self, table: ExtractLoadTableType) -> 'TimeRange':
         return TimeRange.from_task(self, table)
 
     @classmethod
