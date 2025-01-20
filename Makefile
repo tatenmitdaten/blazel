@@ -4,10 +4,10 @@ venv:
 	rm -rf $(VENV_PATH)
 	uv venv $(VENV_PATH) --python 3.12
 	ln -sfn $(VENV_PATH) venv
-	uv pip install setuptools
+	. venv/bin/activate && uv pip install setuptools
 
 install:
-	uv pip install -e .[cli,entra,sqlserver,dev]
+	. venv/bin/activate && uv pip install -e .[cli,entra,sqlserver,dev]
 
 setup: venv install
 

@@ -118,6 +118,8 @@ def cli_load(
             rich.print(response)
         except ProgrammingError as e:
             print(e)
+            if stop_on_error:
+                raise
 
 
 @test.command(name='schedule')
@@ -230,40 +232,57 @@ def cli_timestamps(
         cast(SnowflakeTable, table).update_timestamp_field(value)
 
 
+def get_transform_payload(transform: list[str], env: Env) -> list[list[str]]:
+    dbt = []
+    for cmd in transform:
+        match cmd:
+            case 'build':
+                dbt.append(['build', '--target', env.value])
+            case 'test':
+                dbt.append(['run', '--target', 'dev', '--vars', 'materialized: view'])
+            case 'docs':
+                dbt.append(['docs', 'generate'])
+            case 'skip':
+                pass
+    return dbt
+
+
 @cli.command(name='pipeline')
 def cli_pipeline(
+        schema_names: Annotated[
+            list[str] | None, Option('--schema', '-s', help='schema or all schemas if not provided')
+        ] = None,
+        table_names: Annotated[
+            list[str] | None, Option('--table', '-t', help='table or all tables in schema if not provided')
+        ] = None,
+        skip_extract_load: Annotated[bool, Option(help="skip extract load step")] = False,
+        transform: Annotated[
+            list[str], Option('--transform', click_type=click.Choice(['build', 'test', 'docs']),
+                              help="transform steps to run")
+        ] = ('build', 'docs'),
+        skip_transform: Annotated[bool, Option(help="skip transform step")] = False,
+        skip_refresh: Annotated[bool, Option(help="skip dataset refresh")] = False,
+        dry_run: Annotated[bool, Option(help="dry run")] = False,
         env: Annotated[Env, Option(help="target environment")] = Env.dev,
-        el_run: Annotated[bool, Option(help="run extract load")] = True,
-        dbt_run: Annotated[
-            str, Option(click_type=click.Choice(['build', 'test', 'skip']), help="display raw data")
-        ] = 'build',
-        dbt_docs: Annotated[bool, Option(help="create dbt docs")] = True,
+
 ):
     """
     Run extract load transform pipeline
     """
     Env.set(env)
-    dbt = []
-    match dbt_run:
-        case 'build':
-            dbt.append({'args': ['build', '--target', env.value]})
-        case 'test':
-            dbt.append({'args': ['run', '--target', 'dev', '--vars', 'materialized: view']})
-        case 'skip':
-            pass
-    if dbt_docs:
-        dbt.append({'args': ['docs', 'generate']})
-
     payload = {}
-    if dbt:
-        payload['transform'] = {
-            'dbt': dbt,
-        }
-    if el_run:
-        payload['extract_load'] = {
-            'task_type': 'ScheduleTask',
-        }
-    start_statemachine('Pipeline', json.dumps(payload))
+    if not skip_extract_load:
+        payload['schedule'] = ScheduleTask(
+            schema_names=schema_names,
+            table_names=table_names,
+        ).as_dict
+    if not skip_transform:
+        payload['transform'] = get_transform_payload(transform, env)
+    if not skip_refresh:
+        payload['refresh'] = True
+    print(json.dumps(payload, indent=2))
+    if not dry_run:
+        start_statemachine('Pipeline', json.dumps(payload))
 
 
 @cli.command(name='file')

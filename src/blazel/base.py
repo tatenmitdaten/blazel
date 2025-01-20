@@ -202,8 +202,12 @@ class BaseSchema(Generic[BaseWarehouseType, BaseSchemaType, BaseTableType]):
         if table_names is not None:
             table_names = [table_name.lower() for table_name in table_names]
         for table in self:
-            if table_names is not None and table.table_name not in table_names:
-                continue
+            if table_names is None:
+                if table.options.ignore:
+                    continue
+            else:
+                if table.table_name not in table_names:
+                    continue
             tables.append(table)
         return tables
 

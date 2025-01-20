@@ -317,8 +317,6 @@ class Schedule(Serializable):
     def from_tables(cls, tables: list[ExtractLoadTableType], options: TaskOptions) -> 'Schedule':
         schedule = Schedule()
         for table in tables:
-            if table.options.ignore:
-                continue
             schedule.schedule.append(
                 ExtractLoadJob.from_table(table, options)
             )
