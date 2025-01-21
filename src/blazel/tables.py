@@ -260,8 +260,9 @@ class SnowflakeTable(ExtractLoadTable[SnowflakeSchemaType, SnowflakeTableType, T
         return data
 
     def convert_to_data(self, rows_dicts: Iterable[dict[str, Any]]) -> Generator[tuple[Any, ...], None, None]:
+        column_names = [column.source_name if column.source_name else column.name for column in self]
         for row in rows_dicts:
-            yield tuple(row.get(column_name) for column_name in self.column_names)
+            yield tuple(row.get(column_name) for column_name in column_names)
         return
 
     def upload_to_stage(
