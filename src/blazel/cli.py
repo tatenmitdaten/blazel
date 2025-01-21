@@ -250,15 +250,24 @@ def get_transform_payload(transform: list[str], env: Env) -> list[list[str]]:
 @cli.command(name='pipeline')
 def cli_pipeline(
         schema_names: Annotated[
-            list[str] | None, Option('--schema', '-s', help='schema or all schemas if not provided')
+            list[str] | None, Option(
+                '--schema', '-s',
+                help='schema or all schemas if not provided'
+            )
         ] = None,
         table_names: Annotated[
-            list[str] | None, Option('--table', '-t', help='table or all tables in schema if not provided')
+            list[str] | None, Option(
+                '--table', '-t',
+                help='table or all tables in schema if not provided'
+            )
         ] = None,
         skip_extract_load: Annotated[bool, Option(help="skip extract load step")] = False,
         transform: Annotated[
-            list[str], Option('--transform', click_type=click.Choice(['build', 'test', 'docs']),
-                              help="transform steps to run")
+            list[str], Option(
+                '--transform',
+                click_type=click.Choice(['build', 'test', 'docs']),
+                help="transform steps to run"
+            )
         ] = ('build', 'docs'),
         skip_transform: Annotated[bool, Option(help="skip transform step")] = False,
         skip_refresh: Annotated[bool, Option(help="skip dataset refresh")] = False,
@@ -280,7 +289,7 @@ def cli_pipeline(
         payload['transform'] = get_transform_payload(transform, env)
     if not skip_refresh:
         payload['refresh'] = True
-    print(json.dumps(payload, indent=2))
+    print(payload)
     if not dry_run:
         start_statemachine('Pipeline', json.dumps(payload))
 
