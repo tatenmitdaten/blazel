@@ -449,10 +449,15 @@ class SnowflakeTable(ExtractLoadTable[SnowflakeSchemaType, SnowflakeTableType, T
 class SnowflakeTableUpsert(SnowflakeTable):
 
     def delete_by_primary_key(self) -> str:
+        primary_key_columns = self.options.primary_key.split(';')
+        where_clause = ' AND '.join(
+            f'{self.table_name}.{column} = {self.table_name}{default_stage_suffix}.{column}'
+            for column in primary_key_columns
+        )
         return f"""\
-        DELETE FROM {self.table_uri} WHERE {self.options.primary_key} IN (
-        SELECT {self.options.primary_key} FROM {self.table_uri}{default_stage_suffix}
-        )""".replace(INDENT, '')
+        DELETE FROM {self.table_uri}
+        USING {self.table_uri}{default_stage_suffix}
+        WHERE {where_clause}""".replace(INDENT, '')
 
     def delete_by_datetime_range(self) -> str:
         return f"""\
