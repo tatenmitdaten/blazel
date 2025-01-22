@@ -222,7 +222,7 @@ class ExtractLoadJob(Serializable):
             options.batches = table.options.look_back_days if table.options.timestamp_key else 1
             tzinfo = zoneinfo.ZoneInfo(table.options.timezone)
             end_datetime = datetime.datetime.now(tz=tzinfo)
-            start_datetime = end_datetime - datetime.timedelta(days=table.options.look_back_days)
+            start_datetime = end_datetime - datetime.timedelta(days=table.options.look_back_days - 1)
             options.start = start_datetime.strftime('%Y-%m-%d')
             options.end = end_datetime.strftime('%Y-%m-%d')
         options.batches = max(options.batches, table.options.batches)
