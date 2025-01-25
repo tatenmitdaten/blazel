@@ -208,8 +208,6 @@ class SnowflakeTable(ExtractLoadTable[SnowflakeSchemaType, SnowflakeTableType, T
         }
 
     def get_key(self, batch: int | str, file_number: int, suffix: str = 'csv.gz') -> str:
-        if self.options.stage_file_name:
-            return self.options.stage_file_name
         batch = f'b{batch:02d}' if isinstance(batch, int) else batch
         file_name = f'{self.table_name}_{batch}_f{file_number:02d}.{suffix}'
         return f'{self.schema_name}/{self.table_name}/{file_name}'
@@ -316,11 +314,8 @@ class SnowflakeTable(ExtractLoadTable[SnowflakeSchemaType, SnowflakeTableType, T
             raise ValueError(f'Invalid suffix: {suffix}')
         column_names = ', '.join(column.name for column in self)
         stage = os.environ.get('DATABASE_STAGE', 'public.stage')
-        if self.options.stage_file_name:
-            stage_files = f'{self.database_name}.{stage}/{self.options.stage_file_name}'
-        else:
-            stage_files = f'{self.database_name}.{stage}/{self.schema_name}/{self.table_name}/'
 
+        stage_files = f'{self.database_name}.{stage}/{self.schema_name}/{self.table_name}/'
         match self.options.file_format:
             case 'csv':
                 copy_table_stmt = f"""\

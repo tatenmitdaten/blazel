@@ -189,6 +189,7 @@ def cli_run(
         start: Annotated[str | None, Option(help="start date or datetime")] = None,
         end: Annotated[str | None, Option(help="end date or datetime")] = None,
         remote: Annotated[bool, Option(help="local or remote execution")] = False,
+        table_prefix: Annotated[str | None, Option(help="table prefix")] = '',
         env: Annotated[Env, Option(help="target environment")] = Env.dev,
         limit: Annotated[int, Option(help="limit number of rows to extract")] = 0,
 ):
@@ -212,7 +213,10 @@ def cli_run(
         )
     else:
         warehouse = Warehouse()
-        tables = warehouse.filter(schema_names=schema, table_names=table)
+        tables = [
+            table for table in warehouse.filter(schema_names=schema, table_names=table)
+            if table.table_name >= table_prefix
+        ]
         schedule = Schedule.from_tables(tables, options)
         for job in schedule.schedule:
             print(f'\n\033[96mProcessing "{job.clean.table_uri}"\033[0m')
