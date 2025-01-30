@@ -102,8 +102,6 @@ def cli_load(
             list[str] | None, Option('--table', help="table or all tables in schema if not provided")
         ] = None,
         table_prefix: Annotated[str | None, Option(help="table prefix")] = None,
-        first_table: Annotated[str | None, Option(help="first table")] = None,
-        last_table: Annotated[str | None, Option(help="first table")] = None,
         env: Annotated[Env, Option(help="target environment")] = Env.dev,
         stop_on_error: Annotated[bool, Option(help="stop on error")] = True,
 ):
@@ -113,12 +111,8 @@ def cli_load(
     Env.set(env)
     wh = Warehouse()
     for table in wh.filter(schema_names=schema_names, table_names=table_names):
-        if table_prefix and not table.table_name.startswith(table_prefix):
+        if not table.table_name.startswith(table_prefix):
             continue
-        if first_table and table.table_name < first_table:
-            continue
-        if last_table and table.table_name > last_table:
-            break
         try:
             response = ExtractLoadJob.from_table(table).load(wh)
             rich.print(response)
@@ -215,7 +209,7 @@ def cli_run(
         warehouse = Warehouse()
         tables = [
             table for table in warehouse.filter(schema_names=schema, table_names=table)
-            if table.table_name >= table_prefix
+            if table.table_name.startswith(table_prefix)
         ]
         schedule = Schedule.from_tables(tables, options)
         for job in schedule.schedule:
