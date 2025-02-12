@@ -1,3 +1,4 @@
+import datetime
 import gzip
 import logging
 import os
@@ -12,7 +13,6 @@ from typing import Generator
 
 import msal  # type: ignore
 import requests
-
 from blazel.clients import get_secretsmanager_client
 
 DictTuple = tuple[tuple[str, str], ...]
@@ -83,6 +83,9 @@ class EntraServiceHandler:
             return self.init_token_cache()
         token_cache = msal.SerializableTokenCache()
         token_cache.deserialize(secret['SecretString'])
+        token_entry = next(token_cache.search(token_cache.CredentialType.ACCESS_TOKEN))
+        expiration_date = datetime.datetime.fromtimestamp(int(token_entry.get('expires_on', 0))) + datetime.timedelta(days=90)
+        logger.info(f'Loaded token cache from secret {self.secret_id}. Expires: {expiration_date:}')
         return token_cache
 
     @property
@@ -101,7 +104,12 @@ class EntraServiceHandler:
         accounts = app.get_accounts()
         if not accounts:
             raise RuntimeError('No accounts found in token cache.')
-        token = app.acquire_token_silent(self.scopes, account=accounts[0])
+        token = app.acquire_token_silent_with_error(self.scopes, account=accounts[0])
+        if 'error' in token:
+            if token['error'] == 'invalid_grant':
+                token = self.init_token_cache()
+            else:
+                raise RuntimeError(f"Error acquiring token: {token['error']}")
         self.access_token = token['access_token']
         return self.access_token
 
