@@ -1,3 +1,5 @@
+import csv
+import io
 import json
 import logging
 import os
@@ -9,10 +11,8 @@ import click
 import rich
 import rich.table
 import typer
-from snowflake.connector import ProgrammingError
-from typer import Option
-
 from blazel.config import Env
+from blazel.tables import default_csv_config
 from blazel.tables import SnowflakeTable
 from blazel.tables import SnowflakeWarehouse
 from blazel.tasks import ExtractLoadJob
@@ -20,6 +20,8 @@ from blazel.tasks import Schedule
 from blazel.tasks import ScheduleTask
 from blazel.tasks import TaskOptions
 from blazel.tasks import TimeRange
+from snowflake.connector import ProgrammingError
+from typer import Option
 
 cli = typer.Typer(
     add_completion=False,
@@ -31,6 +33,43 @@ cli.add_typer(test, name="test", help="Test clean, extract and load tasks")
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 logger.addHandler(logging.StreamHandler())
+
+schema_names_ann = Annotated[
+    list[str] | None, Option(
+        '--schema', '-s',
+        help='schema or all schemas if not provided'
+    )
+]
+table_names_ann = Annotated[
+    list[str] | None, Option(
+        '--table', '-t',
+        help='table or all tables in schema if not provided'
+    )
+]
+table_prefix_ann = Annotated[
+    str | None, Option(
+        '--prefix', '-p',
+        help='table prefix'
+    )
+]
+table_prefix_filter_ann = Annotated[
+    str | None, Option(
+        '--filter', '-f',
+        click_type=click.Choice(['before', 'after', 'match']),
+        help='table prefix filter type'
+    )
+]
+stop_on_error_ann = Annotated[
+    bool, Option(
+        help="stop on error"
+    )
+]
+env_ann = Annotated[
+    Env, Option(
+        '--env', '-e',
+        help="target environment"
+    )
+]
 
 
 class Warehouse(SnowflakeWarehouse):
@@ -47,40 +86,60 @@ class Warehouse(SnowflakeWarehouse):
         return cls._instance
 
 
+def get_filtered_tables(
+        schema_names: list[str],
+        table_names: list[str],
+        table_prefix: str | None,
+        table_prefix_filter: str = 'match'
+):
+    for table in Warehouse().filter(schema_names=schema_names, table_names=table_names):
+        if table_prefix:
+            match table_prefix_filter:
+                case 'before':
+                    if table.table_name >= table_prefix:
+                        continue
+                case 'after':
+                    if table.table_name <= table_prefix:
+                        continue
+                case 'match':
+                    if table.table_name.startswith(table_prefix):
+                        continue
+        yield table
+
+
 @test.command(name='clean')
 def cli_clean(
-        schema: Annotated[str, Option(help="schema")],
-        table: Annotated[str, Option(help="table")],
+        schema_names: schema_names_ann = None,
+        table_names: table_names_ann = None,
+        table_prefix: table_prefix_ann = None,
+        table_prefix_filter: table_prefix_filter_ann = 'match',
         env: Annotated[Env, Option(help="target environment")] = Env.dev,
 ):
     """
     Clean staging bucket
     """
     Env.set(env)
-    wh = Warehouse()
-    response = ExtractLoadJob.from_table(wh[schema][table]).clean(wh)
-    rich.print(response)
+    for table in get_filtered_tables(schema_names, table_names, table_prefix, table_prefix_filter):
+        response = ExtractLoadJob.from_table(table).clean(Warehouse())
+        rich.print(response)
 
 
 @test.command(name='extract')
 def cli_extract(
-        schema_names: Annotated[
-            list[str] | None, Option('--schema', help="schema or all schemas if not provided")
-        ] = None,
-        table_names: Annotated[
-            list[str] | None, Option('--table', help="table or all tables in schema if not provided")
-        ] = None,
+        schema_names: schema_names_ann = None,
+        table_names: table_names_ann = None,
+        table_prefix: table_prefix_ann = None,
+        table_prefix_filter: table_prefix_filter_ann = 'match',
         start: Annotated[str | None, Option(help="start date or datetime")] = None,
         end: Annotated[str | None, Option(help="end date or datetime")] = None,
         limit: Annotated[int, Option(help="limit number of rows to extract")] = 0,
-        env: Annotated[Env, Option(help="target environment")] = Env.dev,
+        env: env_ann = Env.dev,
 ):
     """
     Extract data and copy to staging bucket
     """
     Env.set(env)
-    wh = Warehouse()
-    for table in wh.filter(schema_names=schema_names, table_names=table_names):
+    for table in get_filtered_tables(schema_names, table_names, table_prefix, table_prefix_filter):
         batches = TimeRange(start, end).get_batch_n() if table.options.timestamp_key else 1
         options = TaskOptions(
             start=start,
@@ -89,32 +148,26 @@ def cli_extract(
             batches=batches
         )
         for task in ExtractLoadJob.from_table(table, options).extract:
-            response = task(wh)
+            response = task(Warehouse())
             rich.print(response)
 
 
 @test.command(name='load')
 def cli_load(
-        schema_names: Annotated[
-            list[str] | None, Option('--schema', help="schema or all schemas if not provided")
-        ] = None,
-        table_names: Annotated[
-            list[str] | None, Option('--table', help="table or all tables in schema if not provided")
-        ] = None,
-        table_prefix: Annotated[str | None, Option(help="table prefix")] = None,
-        env: Annotated[Env, Option(help="target environment")] = Env.dev,
-        stop_on_error: Annotated[bool, Option(help="stop on error")] = True,
+        schema_names: schema_names_ann = None,
+        table_names: table_names_ann = None,
+        table_prefix: table_prefix_ann = None,
+        table_prefix_filter: table_prefix_filter_ann = 'match',
+        stop_on_error: stop_on_error_ann = True,
+        env: env_ann = Env.dev,
 ):
     """
     Load data from staging bucket to Snowflake
     """
     Env.set(env)
-    wh = Warehouse()
-    for table in wh.filter(schema_names=schema_names, table_names=table_names):
-        if not table.table_name.startswith(table_prefix):
-            continue
+    for table in get_filtered_tables(schema_names, table_names, table_prefix, table_prefix_filter):
         try:
-            response = ExtractLoadJob.from_table(table).load(wh)
+            response = ExtractLoadJob.from_table(table).load(Warehouse())
             rich.print(response)
         except ProgrammingError as e:
             print(e)
@@ -124,17 +177,17 @@ def cli_load(
 
 @test.command(name='schedule')
 def cli_schedule(
-        schema: Annotated[list[str] | None, Option(help="schema or all schemas if not provided")] = None,
-        table: Annotated[list[str] | None, Option(help="table or all tables in schema if not provided")] = None,
-        env: Annotated[Env, Option(help="target environment")] = Env.dev,
+        schema_names: schema_names_ann = None,
+        table_names: table_names_ann = None,
+        env: env_ann = Env.dev,
 ):
     """
     Print default schedule to console
     """
     Env.set(env)
     task: ScheduleTask = ScheduleTask(
-        schema_names=schema,
-        table_names=table,
+        schema_names=schema_names,
+        table_names=table_names,
     )
     schedule = task(Warehouse())
     rich.print(schedule)
@@ -178,14 +231,16 @@ def invoke_lambda_function(name: str, payload: dict | str):
 
 @cli.command(name='run')
 def cli_run(
-        schema: Annotated[list[str] | None, Option(help="schema or all schemas if not provided")] = None,
-        table: Annotated[list[str] | None, Option(help="table or all tables in schema if not provided")] = None,
+        schema_names: schema_names_ann = None,
+        table_names: table_names_ann = None,
+        table_prefix: table_prefix_ann = None,
+        table_prefix_filter: table_prefix_filter_ann = 'match',
         start: Annotated[str | None, Option(help="start date or datetime")] = None,
         end: Annotated[str | None, Option(help="end date or datetime")] = None,
         remote: Annotated[bool, Option(help="local or remote execution")] = False,
-        table_prefix: Annotated[str | None, Option(help="table prefix")] = '',
-        env: Annotated[Env, Option(help="target environment")] = Env.dev,
         limit: Annotated[int, Option(help="limit number of rows to extract")] = 0,
+        stop_on_error: stop_on_error_ann = True,
+        env: env_ann = Env.dev,
 ):
     """
     Schedule and run extract load jobs
@@ -200,17 +255,14 @@ def cli_run(
         start_statemachine(
             'ExtractLoadJobQueue',
             ScheduleTask(
-                schema_names=schema,
-                table_names=table,
+                schema_names=schema_names,
+                table_names=table_names,
                 options=options
             ).as_json
         )
     else:
         warehouse = Warehouse()
-        tables = [
-            table for table in warehouse.filter(schema_names=schema, table_names=table)
-            if table.table_name.startswith(table_prefix)
-        ]
+        tables = get_filtered_tables(schema_names, table_names, table_prefix, table_prefix_filter)
         schedule = Schedule.from_tables(tables, options)
         for job in schedule.schedule:
             print(f'\n\033[96mProcessing "{job.clean.table_uri}"\033[0m')
@@ -218,21 +270,27 @@ def cli_run(
             for task in job.extract:
                 rich.print(f'Extract options: {task.options}')
                 rich.print(task(warehouse))
-            rich.print(job.load(warehouse))
+            try:
+                rich.print(job.load(warehouse))
+            except ProgrammingError as e:
+                print(e)
+                if stop_on_error:
+                    raise
+
 
 
 @cli.command(name='timestamps')
 def cli_timestamps(
-        schema: Annotated[list[str] | None, Option(help="schema or all schemas if not provided")] = None,
-        table: Annotated[list[str] | None, Option(help="table or all tables in schema if not provided")] = None,
+        schema_names: schema_names_ann = None,
+        table_names: table_names_ann = None,
         value: Annotated[str | None, Option(help="timestamp value")] = None,
-        env: Annotated[Env, Option(help="target environment")] = Env.dev
+        env: env_ann = Env.dev
 ):
     """
     Update timestamps in DynamoDb
     """
     Env.set(env)
-    for table in Warehouse().filter(schema_names=schema, table_names=table):
+    for table in Warehouse().filter(schema_names=schema_names, table_names=table_names):
         cast(SnowflakeTable, table).update_timestamp_field(value)
 
 
@@ -253,18 +311,8 @@ def get_transform_payload(transform: list[str], env: Env) -> list[list[str]]:
 
 @cli.command(name='pipeline')
 def cli_pipeline(
-        schema_names: Annotated[
-            list[str] | None, Option(
-                '--schema', '-s',
-                help='schema or all schemas if not provided'
-            )
-        ] = None,
-        table_names: Annotated[
-            list[str] | None, Option(
-                '--table', '-t',
-                help='table or all tables in schema if not provided'
-            )
-        ] = None,
+        schema_names: schema_names_ann = None,
+        table_names: table_names_ann = None,
         skip_extract_load: Annotated[bool, Option(help="skip extract load step")] = False,
         transform: Annotated[
             list[str], Option(
@@ -276,7 +324,7 @@ def cli_pipeline(
         skip_transform: Annotated[bool, Option(help="skip transform step")] = False,
         skip_refresh: Annotated[bool, Option(help="skip dataset refresh")] = False,
         dry_run: Annotated[bool, Option(help="dry run")] = False,
-        env: Annotated[Env, Option(help="target environment")] = Env.dev,
+        env: env_ann = Env.dev,
 
 ):
     """
@@ -303,43 +351,82 @@ def cli_file(
         schema_name: Annotated[str, Option('--schema', help="schema")],
         table_name: Annotated[str, Option('--table', help="table")],
         batch_number: Annotated[int, Option('-b', '--batch', help="batch number")] = 0,
-        file_number: Annotated[int, Option('-f', '--file', help="file number")] = 1,
+        file_number: Annotated[int, Option('-f', '--file', help="file number")] = 0,
         line: Annotated[int, Option('-l', '--line', help="line number")] = 1,
         n: Annotated[int, Option('-n', '--n', help="number of lines to display")] = 10,
         env: Annotated[Env, Option(help="target environment")] = Env.dev,
-        style: Annotated[
-            str, Option(click_type=click.Choice(['raw', 'json', 'csv']), help="display raw data")
+        format_name: Annotated[
+            str, Option(
+                '--format',
+                click_type=click.Choice(['raw', 'json', 'csv', 'table']),
+                help="display raw data"
+            )
         ] = 'raw',
+        delimiter: str = default_csv_config.delimiter,
+        quotechar: str = default_csv_config.quotechar,
+        quoting: str = default_csv_config.quoting,
+        escapechar: str = default_csv_config.escapechar,
+        lineterminator: str = default_csv_config.lineterminator
 ):
     """
     Download and display file from Snowflake stage
     """
     Env.set(env)
     table: SnowflakeTable = Warehouse()[schema_name][table_name]
-    data = table.download_from_stage(batch_number, file_number, style == 'raw')
+    csv_str = table.download_from_stage(batch_number, file_number)
+    delimiter = delimiter.encode().decode('unicode_escape')
+    lineterminator = lineterminator.encode().decode('unicode_escape')
+
+    if format_name == 'raw':
+        data = csv_str.split(lineterminator)
+    else:
+        if len(delimiter) == 1 and len(lineterminator) == 1:
+            data = list(csv.reader(
+                io.StringIO(csv_str),
+                delimiter=delimiter,
+                quotechar=quotechar,
+                quoting=quoting,
+                escapechar=escapechar,
+                lineterminator=lineterminator
+            ))
+        else:
+            data = [line.split(delimiter) for line in csv_str.split(lineterminator)]
+
     if line > len(data):
         print(f'Line {line} is out of range. The file has {len(data)} line(s).')
         return
     index = range(line - 1, min(line - 1 + n, len(data)))
-    output: rich.table.Table | dict = {}
-    match style:
+    output: rich.table.Table | dict | str = {}
+    match format_name:
         case 'json':
-            output = {i: dict(zip(table.columns, data[i])) for i in index}
-        case 'csv':
+            output = {
+                i: dict(zip(table.columns, data[i]))
+                for i in index
+            }
+        case 'table':
             output = rich.table.Table('line', *table.columns, title=table.table_name)
             for i in index:
                 output.add_row(str(i + 1), *[str(item) for item in data[i]])  # type: ignore
+        case 'csv':
+            output = f'\nheader\t{table.column_names}\n' + \
+                     '\n'.join(
+                         f'{i + 1}\t{data[i]}'
+                         for i in index
+                     )
         case 'raw':
-            output = rich.table.Table('line', 'raw', title=table.table_name)
-            for i in index:
-                output.add_row(str(i + 1), data[i])  # type: ignore
+            output = f'\nheader\t{','.join(table.column_names)}\n' + \
+                     '\n'.join(
+                         f'{i + 1}\t{data[i].encode('unicode_escape').decode('utf-8')}'
+                         for i in index
+                     )
+
     rich.print(output)
 
 
 @cli.command(name='tables')
 def cli_tables(
-        schema: Annotated[list[str] | None, Option(help="schema")] = None,
-        table: Annotated[list[str] | None, Option(help="table")] = None,
+        schema_names: schema_names_ann = None,
+        table_names: table_names_ann = None,
         env: Annotated[Env, Option(help="target environment")] = Env.dev,
         overwrite: Annotated[bool, Option(help="overwrite existing tables")] = False,
         save_files: Annotated[bool, Option(help="save create table statements to sql/ folder")] = False,
@@ -349,8 +436,8 @@ def cli_tables(
     """
     Env.set(env)
     Warehouse().create_tables(
-        schema_names=schema,
-        table_names=table,
+        schema_names=schema_names,
+        table_names=table_names,
         overwrite=overwrite,
         save_files=save_files
     )

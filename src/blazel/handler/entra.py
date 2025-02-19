@@ -107,7 +107,8 @@ class EntraServiceHandler:
         token = app.acquire_token_silent_with_error(self.scopes, account=accounts[0])
         if 'error' in token:
             if token['error'] == 'invalid_grant':
-                token = self.init_token_cache()
+                self.init_token_cache()
+                return self.token
             else:
                 raise RuntimeError(f"Error acquiring token: {token['error']}")
         self.access_token = token['access_token']

@@ -13,6 +13,7 @@ from typing import Callable
 from typing import ClassVar
 from typing import Generator
 from typing import Generic
+from typing import Iterable
 from typing import Iterator
 from typing import TypeVar
 
@@ -314,7 +315,7 @@ class Schedule(Serializable):
         ])
 
     @classmethod
-    def from_tables(cls, tables: list[ExtractLoadTableType], options: TaskOptions) -> 'Schedule':
+    def from_tables(cls, tables: Iterable[ExtractLoadTableType], options: TaskOptions) -> 'Schedule':
         schedule = Schedule()
         for table in tables:
             schedule.schedule.append(

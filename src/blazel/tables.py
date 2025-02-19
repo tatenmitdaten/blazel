@@ -1,7 +1,6 @@
 import csv
 import datetime
 import gzip
-import io
 import logging
 import os
 from dataclasses import dataclass
@@ -14,17 +13,11 @@ from typing import Any
 from typing import cast
 from typing import Generator
 from typing import Iterable
+from typing import NamedTuple
 from typing import TypeVar
 from zoneinfo import ZoneInfo
 
 import time
-from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives import serialization
-from itertools import batched
-from snowflake.connector import connect
-from snowflake.connector import SnowflakeConnection
-from snowflake.connector.errors import ProgrammingError
-
 from blazel.base import Column
 from blazel.clients import get_extract_time_table
 from blazel.clients import get_snowflake_secret
@@ -36,6 +29,12 @@ from blazel.tasks import ExtractLoadSchema
 from blazel.tasks import ExtractLoadTable
 from blazel.tasks import ExtractLoadWarehouse
 from blazel.tasks import TableTaskType
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import serialization
+from itertools import batched
+from snowflake.connector import connect
+from snowflake.connector import SnowflakeConnection
+from snowflake.connector.errors import ProgrammingError
 
 logger = logging.getLogger()
 logging.getLogger('snowflake.connector').setLevel(logging.WARNING)
@@ -112,16 +111,21 @@ class DataBytes:
         return size(self.len)
 
 
-@dataclass
-class CsvConfig:
-    delimiter: str = ';'
-    quotechar: str = '"'
-    quoting: int = csv.QUOTE_MINIMAL
-    escapechar: str = '\\'
-    lineterminator: str = '\n'
+class CsvConfig(NamedTuple):
+    delimiter: str
+    quotechar: str
+    quoting: int
+    escapechar: str
+    lineterminator: str
 
 
-csv_config = CsvConfig()
+default_csv_config = CsvConfig(
+    delimiter=';',
+    quotechar='"',
+    quoting=csv.QUOTE_MINIMAL,
+    escapechar='\\',
+    lineterminator='\n'
+)
 
 
 @dataclass
@@ -146,14 +150,7 @@ class GzipFileBuffer:
     @staticmethod
     def get_csv_bytes(rows: tuple[tuple, ...]) -> bytes:
         csv_buffer = StringIO()
-        csv_writer = csv.writer(
-            csv_buffer,
-            delimiter=csv_config.delimiter,
-            quotechar=csv_config.quotechar,
-            quoting=csv_config.quoting,
-            escapechar=csv_config.escapechar,
-            lineterminator=csv_config.lineterminator
-        )
+        csv_writer = csv.writer(csv_buffer, **default_csv_config._asdict())
         csv_writer.writerows(rows)
         return csv_buffer.getvalue().encode()
 
@@ -236,26 +233,13 @@ class SnowflakeTable(ExtractLoadTable[SnowflakeSchemaType, SnowflakeTableType, T
             batch_number: int = 0,
             file_number: int = 0,
             raw: bool = False
-    ) -> list[str] | list[list[Any]]:
+    ) -> str:
         bucket = get_snowflake_staging_bucket()
         key = self.get_key(batch_number, file_number)
         obj = bucket.Object(key)
         logger.info(f'Downloading s3://{bucket.name}/{key}')
         csv_str = gzip.decompress(obj.get()['Body'].read()).decode()
-        data: list[str] | list[list[Any]]
-        if raw:
-            data = csv_str.splitlines()
-        else:
-            reader = csv.reader(
-                io.StringIO(csv_str),
-                delimiter=csv_config.delimiter,
-                quotechar=csv_config.quotechar,
-                quoting=csv_config.quoting,
-                escapechar=csv_config.escapechar,
-                lineterminator=csv_config.lineterminator
-            )
-            data = [row for row in reader]
-        return data
+        return csv_str
 
     def convert_to_data(self, rows_dicts: Iterable[dict[str, Any]]) -> Generator[tuple[Any, ...], None, None]:
         column_names = [column.source_name if column.source_name else column.name for column in self]
