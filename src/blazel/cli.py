@@ -102,7 +102,7 @@ def get_filtered_tables(
                     if table.table_name <= table_prefix:
                         continue
                 case 'match':
-                    if table.table_name.startswith(table_prefix):
+                    if not table.table_name.startswith(table_prefix):
                         continue
         yield table
 
