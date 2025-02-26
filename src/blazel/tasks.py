@@ -369,7 +369,7 @@ class ScheduleTask(BaseTask[ExtractLoadWarehouseType]):
 @dataclass
 class TimeRange(Generic[ExtractLoadTableType]):
     min_start_str: ClassVar[str] = datetime.datetime(year=1900, month=1, day=1).strftime(default_timestamp_format)
-    max_end_str: ClassVar[str] = datetime.datetime(year=2100, month=12, day=31).strftime(default_timestamp_format)
+    max_end_str: ClassVar[str] = datetime.datetime.now().replace(hour=23, minute=59, second=59).strftime(default_timestamp_format)
     start: str | None
     end: str | None
     tzinfo: zoneinfo.ZoneInfo = zoneinfo.ZoneInfo('Europe/Berlin')
@@ -389,8 +389,8 @@ class TimeRange(Generic[ExtractLoadTableType]):
         return (self.end_date - self.start_date).days + 1
 
     def get_batch_date(self, batch_number: int) -> datetime.date:
-        if self.start is None or self.end is None:
-            raise ValueError('Both start_date and end_date are required for batched tasks')
+        if self.start is None:
+            raise ValueError('Both start_date is required for batched tasks')
         batch_date = self.start_date + datetime.timedelta(days=batch_number)
         if batch_date > self.end_date:
             raise ValueError('batch_date exceeds end_date')

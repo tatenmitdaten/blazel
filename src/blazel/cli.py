@@ -179,6 +179,8 @@ def cli_load(
 def cli_schedule(
         schema_names: schema_names_ann = None,
         table_names: table_names_ann = None,
+        start: Annotated[str | None, Option(help="start date or datetime")] = None,
+        end: Annotated[str | None, Option(help="end date or datetime")] = None,
         env: env_ann = Env.dev,
 ):
     """
@@ -188,6 +190,7 @@ def cli_schedule(
     task: ScheduleTask = ScheduleTask(
         schema_names=schema_names,
         table_names=table_names,
+        options=TaskOptions(start=start, end=end)
     )
     schedule = task(Warehouse())
     rich.print(schedule)
@@ -313,6 +316,8 @@ def get_transform_payload(transform: list[str], env: Env) -> list[list[str]]:
 def cli_pipeline(
         schema_names: schema_names_ann = None,
         table_names: table_names_ann = None,
+        start: Annotated[str | None, Option(help="start date or datetime")] = None,
+        end: Annotated[str | None, Option(help="end date or datetime")] = None,
         skip_extract_load: Annotated[bool, Option(help="skip extract load step")] = False,
         transform: Annotated[
             list[str], Option(
@@ -336,6 +341,7 @@ def cli_pipeline(
         payload['schedule'] = ScheduleTask(
             schema_names=schema_names,
             table_names=table_names,
+            options=TaskOptions(start=start, end=end)
         ).as_dict
     if not skip_transform:
         payload['transform'] = get_transform_payload(transform, env)
