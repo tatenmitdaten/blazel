@@ -360,7 +360,7 @@ def cli_file(
         file_number: Annotated[int, Option('-f', '--file', help="file number")] = 0,
         line: Annotated[int, Option('-l', '--line', help="line number")] = 1,
         n: Annotated[int, Option('-n', '--n', help="number of lines to display")] = 10,
-        env: Annotated[Env, Option(help="target environment")] = Env.dev,
+        env: env_ann = Env.dev,
         format_name: Annotated[
             str, Option(
                 '--format',
@@ -433,7 +433,7 @@ def cli_file(
 def cli_tables(
         schema_names: schema_names_ann = None,
         table_names: table_names_ann = None,
-        env: Annotated[Env, Option(help="target environment")] = Env.dev,
+        env: env_ann = Env.dev,
         overwrite: Annotated[bool, Option(help="overwrite existing tables")] = False,
         save_files: Annotated[bool, Option(help="save create table statements to sql/ folder")] = False,
 ):
