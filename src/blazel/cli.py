@@ -113,7 +113,7 @@ def cli_clean(
         table_names: table_names_ann = None,
         table_prefix: table_prefix_ann = None,
         table_prefix_filter: table_prefix_filter_ann = 'match',
-        env: Annotated[Env, Option(help="target environment")] = Env.dev,
+        env: env_ann = Env.dev,
 ):
     """
     Clean staging bucket
