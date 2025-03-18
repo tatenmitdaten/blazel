@@ -281,7 +281,6 @@ def cli_run(
                     raise
 
 
-
 @cli.command(name='timestamps')
 def cli_timestamps(
         schema_names: schema_names_ann = None,
@@ -328,6 +327,7 @@ def cli_pipeline(
         ] = ('build', 'docs'),
         skip_transform: Annotated[bool, Option(help="skip transform step")] = False,
         skip_refresh: Annotated[bool, Option(help="skip dataset refresh")] = False,
+        skip_predict: Annotated[bool, Option(help="skip dataset refresh")] = True,
         dry_run: Annotated[bool, Option(help="dry run")] = False,
         env: env_ann = Env.dev,
 
@@ -347,6 +347,8 @@ def cli_pipeline(
         payload['transform'] = get_transform_payload(transform, env)
     if not skip_refresh:
         payload['refresh'] = True
+    if not skip_predict:
+        payload['predict'] = True
     print(payload)
     if not dry_run:
         start_statemachine('Pipeline', json.dumps(payload))
