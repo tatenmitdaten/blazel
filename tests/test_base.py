@@ -1,5 +1,6 @@
 import os
 from itertools import product
+from typing import Generator
 
 import pytest
 
@@ -18,10 +19,10 @@ def warehouse_dict() -> dict:
                     'column1': 'varchar',
                     'column2': {
                         'dtype': 'number',
-                        'comment': 'This is a number',
+                        'description': 'This is a number',
                     },
                 },
-                'options': {
+                'meta': {
                     'primary_key': 'column1',
                 }
             },
@@ -44,8 +45,8 @@ schema1:
       column1: varchar
       column2:
         dtype: number
-        comment: This is a number
-    options:
+        description: This is a number
+    meta:
       primary_key: column1
   table2:
     columns:
@@ -55,16 +56,16 @@ schema1:
 
 
 @pytest.fixture
-def warehouse() -> BaseWarehouse:
+def warehouse() -> Generator[BaseWarehouse, None, None]:
     n = 10
     warehouse = BaseWarehouse()
     for i in range(n):
         schema_name = f'schema{i}'
-        schema = BaseSchema(warehouse, schema_name=schema_name)
+        schema = BaseSchema(warehouse, name=schema_name)
         warehouse.schemas[schema_name] = schema
         for j in range(n):
             table_name = f'table{j}'
-            schema.tables[table_name] = BaseTable(schema=schema, table_name=table_name)
+            schema.tables[table_name] = BaseTable(schema=schema, name=table_name)
     yield warehouse
 
 
@@ -108,14 +109,14 @@ def test_warehouse_from_yaml_file(warehouse_yaml_file, warehouse_yaml):
 def test_warehouse_filter(warehouse):
     # get all tables from one schema
     tables = warehouse.filter(schema_names=['schema1'])
-    assert all(t.schema_name == 'schema1' for t in tables)
-    assert [t.table_name for t in tables] == [f'table{i}' for i in range(10)]
+    assert all(t.schema.name == 'schema1' for t in tables)
+    assert [t.name for t in tables] == [f'table{i}' for i in range(10)]
 
     # get multiple tables from multiple schemas
     schema_names = ['schema1', 'schema3', 'schema5']
     table_names = ['table1', 'table3', 'table5']
     tables = warehouse.filter(schema_names=schema_names, table_names=table_names)
-    assert [(t.schema_name, t.table_name) for t in tables] == list(product(schema_names, table_names))
+    assert [(t.schema.name, t.name) for t in tables] == list(product(schema_names, table_names))
 
     # test edge cases on schema_names
     assert warehouse.filter(schema_names=['not_existing']) == []
@@ -132,7 +133,7 @@ def test_warehouse_filter_stratify(warehouse):
     schema_names = ['schema1', 'schema3', 'schema5']
     table_names = ['table1', 'table3', 'table5']
     tables = warehouse.filter(schema_names=schema_names, table_names=table_names, stratify=True)
-    assert [(t.schema_name, t.table_name) for t in tables] == [
+    assert [(t.schema.name, t.name) for t in tables] == [
         ('schema1', 'table1'),
         ('schema3', 'table1'),
         ('schema5', 'table1'),

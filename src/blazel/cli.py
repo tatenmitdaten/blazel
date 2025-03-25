@@ -1,9 +1,11 @@
 import csv
 import io
+import itertools
 import json
 import logging
 import os
 from typing import Annotated
+from typing import Any
 from typing import cast
 
 import boto3
@@ -16,6 +18,7 @@ from blazel.tables import default_csv_config
 from blazel.tables import SnowflakeTable
 from blazel.tables import SnowflakeWarehouse
 from blazel.tasks import ExtractLoadJob
+from blazel.tasks import ExtractTask
 from blazel.tasks import Schedule
 from blazel.tasks import ScheduleTask
 from blazel.tasks import TaskOptions
@@ -53,7 +56,7 @@ table_prefix_ann = Annotated[
     )
 ]
 table_prefix_filter_ann = Annotated[
-    str | None, Option(
+    str, Option(
         '--filter', '-f',
         click_type=click.Choice(['before', 'after', 'match']),
         help='table prefix filter type'
@@ -87,8 +90,8 @@ class Warehouse(SnowflakeWarehouse):
 
 
 def get_filtered_tables(
-        schema_names: list[str],
-        table_names: list[str],
+        schema_names: list[str] | None,
+        table_names: list[str] | None,
         table_prefix: str | None,
         table_prefix_filter: str = 'match'
 ):
@@ -96,13 +99,13 @@ def get_filtered_tables(
         if table_prefix:
             match table_prefix_filter:
                 case 'before':
-                    if table.table_name >= table_prefix:
+                    if table.name >= table_prefix:
                         continue
                 case 'after':
-                    if table.table_name <= table_prefix:
+                    if table.name <= table_prefix:
                         continue
                 case 'match':
-                    if not table.table_name.startswith(table_prefix):
+                    if not table.name.startswith(table_prefix):
                         continue
         yield table
 
@@ -140,7 +143,7 @@ def cli_extract(
     """
     Env.set(env)
     for table in get_filtered_tables(schema_names, table_names, table_prefix, table_prefix_filter):
-        batches = TimeRange(start, end).get_batch_n() if table.options.timestamp_key else 1
+        batches = TimeRange(start, end).get_batch_n() if table.meta.timestamp_key else 1
         options = TaskOptions(
             start=start,
             end=end,
@@ -271,7 +274,7 @@ def cli_run(
             print(f'\n\033[96mProcessing "{job.clean.table_uri}"\033[0m')
             rich.print(job.clean(warehouse))
             for task in job.extract:
-                rich.print(f'Extract options: {task.options}')
+                rich.print(f'Extract options: {cast(ExtractTask, task).options}')
                 rich.print(task(warehouse))
             try:
                 rich.print(job.load(warehouse))
@@ -296,7 +299,7 @@ def cli_timestamps(
         cast(SnowflakeTable, table).update_timestamp_field(value)
 
 
-def get_transform_payload(transform: list[str], env: Env) -> list[list[str]]:
+def get_transform_payload(transform: list[str] | tuple[str, ...], env: Env) -> list[list[str]]:
     dbt = []
     for cmd in transform:
         match cmd:
@@ -311,23 +314,32 @@ def get_transform_payload(transform: list[str], env: Env) -> list[list[str]]:
     return dbt
 
 
+steps = [
+    ''.join(t)
+    for r in range(1, 5)
+    for t in itertools.combinations(['el', 't', 'r', 'p'], r)
+]
+
+
 @cli.command(name='pipeline')
 def cli_pipeline(
         schema_names: schema_names_ann = None,
         table_names: table_names_ann = None,
         start: Annotated[str | None, Option(help="start date or datetime")] = None,
         end: Annotated[str | None, Option(help="end date or datetime")] = None,
-        skip_extract_load: Annotated[bool, Option(help="skip extract load step")] = False,
+        steps: Annotated[str, Option(
+            '--steps',
+            click_type=click.Choice(choices=steps),
+            help="steps to run",
+        )
+        ] = 'eltr',
         transform: Annotated[
-            list[str], Option(
+            tuple[str, ...], Option(
                 '--transform',
                 click_type=click.Choice(['build', 'test', 'docs']),
                 help="transform steps to run"
             )
         ] = ('build', 'docs'),
-        skip_transform: Annotated[bool, Option(help="skip transform step")] = False,
-        skip_refresh: Annotated[bool, Option(help="skip dataset refresh")] = False,
-        skip_predict: Annotated[bool, Option(help="skip dataset refresh")] = True,
         dry_run: Annotated[bool, Option(help="dry run")] = False,
         env: env_ann = Env.dev,
 
@@ -335,19 +347,20 @@ def cli_pipeline(
     """
     Run extract load transform pipeline
     """
+
     Env.set(env)
-    payload = {}
-    if not skip_extract_load:
+    payload: dict[str, Any] = {}
+    if 'el' in steps:
         payload['schedule'] = ScheduleTask(
             schema_names=schema_names,
             table_names=table_names,
             options=TaskOptions(start=start, end=end)
         ).as_dict
-    if not skip_transform:
+    if 't' in steps:
         payload['transform'] = get_transform_payload(transform, env)
-    if not skip_refresh:
+    if 'r' in steps:
         payload['refresh'] = True
-    if not skip_predict:
+    if 'p' in steps:
         payload['predict'] = True
     print(payload)
     if not dry_run:
@@ -372,7 +385,7 @@ def cli_file(
         ] = 'raw',
         delimiter: str = default_csv_config.delimiter,
         quotechar: str = default_csv_config.quotechar,
-        quoting: str = default_csv_config.quoting,
+        quoting: int = default_csv_config.quoting,
         escapechar: str = default_csv_config.escapechar,
         lineterminator: str = default_csv_config.lineterminator
 ):
@@ -385,20 +398,26 @@ def cli_file(
     delimiter = delimiter.encode().decode('unicode_escape')
     lineterminator = lineterminator.encode().decode('unicode_escape')
 
+    data: list[list[str]] | list[str]
     if format_name == 'raw':
         data = csv_str.split(lineterminator)
     else:
         if len(delimiter) == 1 and len(lineterminator) == 1:
-            data = list(csv.reader(
-                io.StringIO(csv_str),
-                delimiter=delimiter,
-                quotechar=quotechar,
-                quoting=quoting,
-                escapechar=escapechar,
-                lineterminator=lineterminator
-            ))
+            data = [
+                line for line in csv.reader(
+                    io.StringIO(csv_str),
+                    delimiter=delimiter,
+                    quotechar=quotechar,
+                    quoting=quoting,
+                    escapechar=escapechar,
+                    lineterminator=lineterminator
+                )
+            ]
         else:
-            data = [line.split(delimiter) for line in csv_str.split(lineterminator)]
+            data = [
+                line.split(delimiter)
+                for line in csv_str.split(lineterminator)
+            ]
 
     if line > len(data):
         print(f'Line {line} is out of range. The file has {len(data)} line(s).')
@@ -412,21 +431,22 @@ def cli_file(
                 for i in index
             }
         case 'table':
-            output = rich.table.Table('line', *table.columns, title=table.table_name)
+            output = rich.table.Table('line', *table.columns, title=table.name)
             for i in index:
                 output.add_row(str(i + 1), *[str(item) for item in data[i]])  # type: ignore
         case 'csv':
-            output = f'\nheader\t{table.column_names}\n' + \
-                     '\n'.join(
-                         f'{i + 1}\t{data[i]}'
-                         for i in index
-                     )
+            rows = '\n'.join(
+                f'{i + 1}\t{data[i]}'
+                for i in index
+            )
+            output = f'\nheader\t{table.column_names}\n{rows}'
+
         case 'raw':
-            output = f'\nheader\t{','.join(table.column_names)}\n' + \
-                     '\n'.join(
-                         f'{i + 1}\t{data[i].encode('unicode_escape').decode('utf-8')}'
-                         for i in index
-                     )
+            rows = '\n'.join(
+                f'{i + 1}\t{cast(str, data[i]).encode('unicode_escape').decode('utf-8')}'
+                for i in index
+            )
+            output = f'\nheader\t{','.join(table.column_names)}\n{rows}'
 
     rich.print(output)
 
@@ -449,6 +469,13 @@ def cli_tables(
         overwrite=overwrite,
         save_files=save_files
     )
+
+
+@cli.command(name='dbt')
+def cli_dbt(
+        file: str,
+):
+    Warehouse().to_dbt_format(file)
 
 
 if __name__ == '__main__':

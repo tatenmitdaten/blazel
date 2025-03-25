@@ -34,7 +34,7 @@ class LambdaContext:
 
     @property
     def aws_request_id(self) -> str:
-        """The identifier of the invocation request."""
+        """The source of the invocation request."""
         return self._aws_request_id
 
     @property

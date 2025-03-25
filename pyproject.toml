@@ -13,7 +13,7 @@ dynamic = ["version"]
 
 dependencies = [
     "snowflake-connector-python",
-    "pyyaml",
+    "ruamel.yaml",
     "boto3-stubs[s3,dynamodb,secretsmanager,lambda,stepfunctions]",
 ]
 
@@ -44,6 +44,10 @@ sqlserver = [
     "paramiko",
     "sshtunnel",
 ]
+aiagent = [
+    "google-genai",
+    "mistralai",
+]
 
 [project.scripts]
 blazel = "blazel.cli:cli"
@@ -53,3 +57,8 @@ where = ["src"]
 
 [tool.distutils.egg_info]
 egg_base = "."
+
+[tool.mypy]
+[[tool.mypy.overrides]]
+module = "ruamel.yaml"
+follow_imports = "skip"

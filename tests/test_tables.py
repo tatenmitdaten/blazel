@@ -29,7 +29,7 @@ def schema() -> SnowflakeSchema:
             },
             'table_csv_upsert': {
                 'columns': columns,
-                'options': {
+                'meta': {
                     'primary_key': 'column0',
                 }
             },
@@ -80,9 +80,9 @@ TRIM_SPACE = TRUE
 FIELD_OPTIONALLY_ENCLOSED_BY = '"'
  );
 UPDATE sources_dev.schema0.table_csv_upsert_stage SET load_date='2024-01-01 00:00:00';
-DELETE FROM sources_dev.schema0.table_csv_upsert WHERE column0 IN (
-SELECT column0 FROM sources_dev.schema0.table_csv_upsert_stage
-);
+DELETE FROM sources_dev.schema0.table_csv_upsert
+USING sources_dev.schema0.table_csv_upsert_stage
+WHERE table_csv_upsert.column0 = table_csv_upsert_stage.column0;
 INSERT INTO sources_dev.schema0.table_csv_upsert SELECT * FROM sources_dev.schema0.table_csv_upsert_stage"""
 
 
@@ -223,7 +223,7 @@ def test_extract_task_latest_timestamp(extract_time_table, parameters, table0):
     latest_timestamp = '2024-01-01T00:00:00'
     task = ExtractLoadJob.from_table(table0).extract[0]
     assert task.options.start is None
-    table0.options.timestamp_field = 'column1'
+    table0.meta.timestamp_field = 'column1'
     table0.set_latest_timestamp(latest_timestamp)
     time_range = task.get_timerange(table0)
     assert time_range.start == latest_timestamp

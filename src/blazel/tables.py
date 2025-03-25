@@ -45,6 +45,8 @@ SnowflakeTableType = TypeVar('SnowflakeTableType', bound='SnowflakeTable')
 SnowflakeSchemaType = TypeVar('SnowflakeSchemaType', bound='SnowflakeSchema')
 SnowflakeWarehouseType = TypeVar('SnowflakeWarehouseType', bound='SnowflakeWarehouse')
 
+SnowflakeSchema = ExtractLoadSchema[SnowflakeWarehouseType, SnowflakeSchemaType, SnowflakeTableType]
+
 INDENT = 8 * ' '
 
 
@@ -172,7 +174,13 @@ class GzipFileBuffer:
         return data_bytes
 
 
-class SnowflakeTable(ExtractLoadTable[SnowflakeSchemaType, SnowflakeTableType, TableTaskType]):
+class SnowflakeTable(
+    ExtractLoadTable[
+        SnowflakeSchemaType,
+        SnowflakeTableType,
+        TableTaskType
+    ]
+):
 
     def create_table_stmt(self) -> str:
         def f_comment(comment: str | None) -> str:
@@ -180,14 +188,14 @@ class SnowflakeTable(ExtractLoadTable[SnowflakeSchemaType, SnowflakeTableType, T
 
         indent = 4 * ' '
         columns = ',\n'.join(
-            [f'{indent}{column.name} {column.dtype.upper()}{f_comment(column.comment)}'
+            [f'{indent}{column.name} {column.dtype.upper()}{f_comment(column.description)}'
              for column in self] + [f'{indent}load_date DATETIME']
         )
         return f"DROP TABLE IF EXISTS {self.table_uri};\n" \
                f"CREATE TABLE {self.table_uri} (\n{columns}\n)"
 
     def clean_stage(self) -> dict | None:
-        prefix = f'{self.schema_name}/{self.table_name}/'
+        prefix = f'{self.schema.name}/{self.name}/'
         objects, counter = [], 0
         bucket = get_snowflake_staging_bucket()
         for i, obj in enumerate(bucket.objects.filter(Prefix=prefix)):
@@ -206,8 +214,8 @@ class SnowflakeTable(ExtractLoadTable[SnowflakeSchemaType, SnowflakeTableType, T
 
     def get_key(self, batch: int | str, file_number: int, suffix: str = 'csv.gz') -> str:
         batch = f'b{batch:02d}' if isinstance(batch, int) else batch
-        file_name = f'{self.table_name}_{batch}_f{file_number:02d}.{suffix}'
-        return f'{self.schema_name}/{self.table_name}/{file_name}'
+        file_name = f'{self.name}_{batch}_f{file_number:02d}.{suffix}'
+        return f'{self.schema.name}/{self.name}/{file_name}'
 
     @staticmethod
     def get_data_bytes(data: Data, max_file_size: int, csv_batch_size: int) -> Generator[DataBytes, None, None]:
@@ -231,8 +239,7 @@ class SnowflakeTable(ExtractLoadTable[SnowflakeSchemaType, SnowflakeTableType, T
     def download_from_stage(
             self,
             batch_number: int = 0,
-            file_number: int = 0,
-            raw: bool = False
+            file_number: int = 0
     ) -> str:
         bucket = get_snowflake_staging_bucket()
         key = self.get_key(batch_number, file_number)
@@ -242,7 +249,7 @@ class SnowflakeTable(ExtractLoadTable[SnowflakeSchemaType, SnowflakeTableType, T
         return csv_str
 
     def convert_to_data(self, rows_dicts: Iterable[dict[str, Any]]) -> Generator[tuple[Any, ...], None, None]:
-        column_names = [column.source_name if column.source_name else column.name for column in self]
+        column_names = [column.source if column.source else column.name for column in self]
         for row in rows_dicts:
             yield tuple(row.get(column_name) for column_name in column_names)
         return
@@ -277,9 +284,9 @@ class SnowflakeTable(ExtractLoadTable[SnowflakeSchemaType, SnowflakeTableType, T
         return {'message': message}
 
     def file_format(self) -> str:
-        if self.options.stage_file_format:
-            return f"FORMAT_NAME = '{self.database_name}.public.{self.options.stage_file_format}'"
-        match self.options.file_format:
+        if self.meta.stage_file_format:
+            return f"FORMAT_NAME = '{self.database_name}.public.{self.meta.stage_file_format}'"
+        match self.meta.file_format:
             case 'csv':
                 return """
                 TYPE = CSV
@@ -291,7 +298,7 @@ class SnowflakeTable(ExtractLoadTable[SnowflakeSchemaType, SnowflakeTableType, T
             case 'parquet':
                 return "TYPE = PARQUET"
             case _:
-                raise ValueError(f"Unsupported file_format '{self.options.file_format}'")
+                raise ValueError(f"Unsupported file_format '{self.meta.file_format}'")
 
     def copy_table_stmt(self, suffix='') -> str:
         if suffix not in ('', default_stage_suffix):
@@ -299,8 +306,8 @@ class SnowflakeTable(ExtractLoadTable[SnowflakeSchemaType, SnowflakeTableType, T
         column_names = ', '.join(column.name for column in self)
         stage = os.environ.get('DATABASE_STAGE', 'public.stage')
 
-        stage_files = f'{self.database_name}.{stage}/{self.schema_name}/{self.table_name}/'
-        match self.options.file_format:
+        stage_files = f'{self.database_name}.{stage}/{self.schema.name}/{self.name}/'
+        match self.meta.file_format:
             case 'csv':
                 copy_table_stmt = f"""\
                 COPY INTO {self.table_uri}{suffix} ({column_names})
@@ -321,7 +328,7 @@ class SnowflakeTable(ExtractLoadTable[SnowflakeSchemaType, SnowflakeTableType, T
                 )
                 FILE_FORMAT = ( {self.file_format()} )""".replace(INDENT, '')
             case _:
-                raise ValueError(f"Unsupported file_format '{self.options.file_format}'")
+                raise ValueError(f"Unsupported file_format '{self.meta.file_format}'")
         return copy_table_stmt
 
     @staticmethod
@@ -358,25 +365,25 @@ class SnowflakeTable(ExtractLoadTable[SnowflakeSchemaType, SnowflakeTableType, T
         return ';\n'.join(self.load_stmt().values())
 
     def get_latest_timestamp(self) -> str | None:
-        if self.options.timestamp_field is None:
-            raise ValueError('The timestamp_field in options is not set')
+        if self.meta.timestamp_field is None:
+            raise ValueError('The timestamp_field in meta is not set')
         response = get_extract_time_table().get_item(Key={'table_uri': self.table_uri})
-        latest_timestamp = response.get('Item', {}).get(self.options.timestamp_field)
+        latest_timestamp = response.get('Item', {}).get(self.meta.timestamp_field)
         return cast(str | None, latest_timestamp)
 
     def set_latest_timestamp(self, latest_timestamp: str | datetime.datetime | None):
-        if self.options.timestamp_field is None:
-            raise ValueError('The timestamp_field in options is not set')
+        if self.meta.timestamp_field is None:
+            raise ValueError('The timestamp_field in meta is not set')
         if isinstance(latest_timestamp, (datetime.datetime, datetime.date)):
             latest_timestamp = latest_timestamp.strftime(default_timestamp_format)
         get_extract_time_table().put_item(
             Item={
                 'table_uri': self.table_uri,
-                self.options.timestamp_field: latest_timestamp,
+                self.meta.timestamp_field: latest_timestamp,
                 'updated': self.get_now_timestamp()
             }
         )
-        logger.info(f'Set latest timestamp {self.options.timestamp_field}={latest_timestamp} for {self.table_uri}')
+        logger.info(f'Set latest timestamp {self.meta.timestamp_field}={latest_timestamp} for {self.table_uri}')
 
     def load_from_stage(self) -> dict | None:
         """
@@ -404,8 +411,8 @@ class SnowflakeTable(ExtractLoadTable[SnowflakeSchemaType, SnowflakeTableType, T
                                         msg = 'file: {}, status: {}, parsed {}, loaded {}'.format(*row[:4])
                                     messages.append(f'{cmd_type.value}: {msg}')
                                 logger.info('\n'.join(messages))
-                if self.options.timestamp_field:
-                    snowflake_cursor.execute(f'SELECT MAX({self.options.timestamp_field}) FROM {self.table_uri}')
+                if self.meta.timestamp_field:
+                    snowflake_cursor.execute(f'SELECT MAX({self.meta.timestamp_field}) FROM {self.table_uri}')
                     result: tuple = snowflake_cursor.fetchone()  # type: ignore
                     self.set_latest_timestamp(result[0])
         return {
@@ -417,9 +424,9 @@ class SnowflakeTable(ExtractLoadTable[SnowflakeSchemaType, SnowflakeTableType, T
             value = value.strftime(default_timestamp_format)
         with get_snowflake_connection(self.database_name) as snowflake_conn:
             with snowflake_conn.cursor() as snowflake_cursor:
-                if self.options.timestamp_field:
+                if self.meta.timestamp_field:
                     if value is None:
-                        snowflake_cursor.execute(f'SELECT MAX({self.options.timestamp_field}) FROM {self.table_uri}')
+                        snowflake_cursor.execute(f'SELECT MAX({self.meta.timestamp_field}) FROM {self.table_uri}')
                         result: tuple = snowflake_cursor.fetchone()  # type: ignore
                         value = result[0]
                     self.set_latest_timestamp(value)
@@ -428,9 +435,11 @@ class SnowflakeTable(ExtractLoadTable[SnowflakeSchemaType, SnowflakeTableType, T
 class SnowflakeTableUpsert(SnowflakeTable):
 
     def delete_by_primary_key(self) -> str:
-        primary_key_columns = self.options.primary_key.split(';')
+        if self.meta.primary_key is None:
+            raise ValueError('Primary key is not set')
+        primary_key_columns = self.meta.primary_key.split(';')
         where_clause = ' AND '.join(
-            f'{self.table_name}.{column} = {self.table_name}{default_stage_suffix}.{column}'
+            f'{self.name}.{column} = {self.name}{default_stage_suffix}.{column}'
             for column in primary_key_columns
         )
         return f"""\
@@ -443,17 +452,17 @@ class SnowflakeTableUpsert(SnowflakeTable):
         DELETE FROM {self.table_uri}
         USING (
             SELECT
-                MIN({self.options.timestamp_key}) AS min_ts,
-                MAX({self.options.timestamp_key}) AS max_ts
+                MIN({self.meta.timestamp_key}) AS min_ts,
+                MAX({self.meta.timestamp_key}) AS max_ts
             FROM {self.table_uri}{default_stage_suffix}
         ) AS range
-        WHERE ({self.options.timestamp_key} BETWEEN range.min_ts AND range.max_ts)
-            OR {self.options.timestamp_key} IS NULL""".replace(INDENT, '')
+        WHERE ({self.meta.timestamp_key} BETWEEN range.min_ts AND range.max_ts)
+            OR {self.meta.timestamp_key} IS NULL""".replace(INDENT, '')
 
     def delete_from_table_stmt(self) -> str:
-        if self.options.primary_key:
+        if self.meta.primary_key:
             return self.delete_by_primary_key()
-        if self.options.timestamp_key:
+        if self.meta.timestamp_key:
             return self.delete_by_datetime_range()
         raise ValueError('Primary key or timestamp_key is required for upsert.')
 
@@ -462,11 +471,11 @@ class SnowflakeTableUpsert(SnowflakeTable):
         INSERT INTO {self.table_uri} SELECT * FROM {self.table_uri}{default_stage_suffix}""".replace(INDENT, '')
 
     def load_stmt(self) -> dict[SQL, str]:
-        if self.options.truncate:
-            logger.info(f'Explicit truncate in options for {self.table_uri}.')
+        if self.meta.truncate:
+            logger.info(f'Explicit truncate in meta for {self.table_uri}.')
             return super().load_stmt()
 
-        logger.info(f'Upsert {self.table_uri} using primary key {self.options.primary_key}...')
+        logger.info(f'Upsert {self.table_uri} using primary key {self.meta.primary_key}...')
         return {
             SQL.drop: self.drop_staging_table_stmt(),
             SQL.create: self.create_staging_table_stmt(),
@@ -477,15 +486,18 @@ class SnowflakeTableUpsert(SnowflakeTable):
         }
 
 
-class SnowflakeSchema(ExtractLoadSchema[SnowflakeWarehouseType, SnowflakeSchemaType, SnowflakeTableType]):
-    pass
-
-
-class SnowflakeWarehouse(ExtractLoadWarehouse[SnowflakeWarehouseType, SnowflakeSchemaType, SnowflakeTableType]):
+class SnowflakeWarehouse(
+    ExtractLoadWarehouse[
+        SnowflakeWarehouseType,
+        SnowflakeSchemaType,
+        SnowflakeTableType
+    ]
+):
     schemas: dict[str, SnowflakeSchemaType] = field(default_factory=dict)
 
-    def table_class(self, table_serialized: dict[str, dict | None]) -> type[SnowflakeTableType]:
-        options = table_serialized.get('options') or {}
+    @staticmethod
+    def table_class(table_serialized: dict[str, dict | None]) -> type[SnowflakeTableType]:
+        options = table_serialized.get('meta') or {}
         has_upsert_key = options.get('primary_key') is not None or options.get('timestamp_key') is not None
         if has_upsert_key:
             return cast(type[SnowflakeTableType], SnowflakeTableUpsert)
@@ -498,11 +510,11 @@ class SnowflakeWarehouse(ExtractLoadWarehouse[SnowflakeWarehouseType, SnowflakeS
             overwrite: bool = False,
             save_files: bool = False
     ):
-        with get_snowflake_connection(self.database_name) as snowflake_conn:
+        with get_snowflake_connection(self.name) as snowflake_conn:
             with snowflake_conn.cursor() as snowflake_cursor:
                 schemas = self.filter_schemas(schema_names)
                 for schema in schemas:
-                    schema_uri = f'{self.database_name}.{schema.schema_name}'
+                    schema_uri = f'{self.name}.{schema.name}'
                     if table_names is None and overwrite:
                         logger.info(f'Dropped {schema_uri}.')
                         snowflake_cursor.execute(f'DROP SCHEMA IF EXISTS {schema_uri} CASCADE')
@@ -511,9 +523,9 @@ class SnowflakeWarehouse(ExtractLoadWarehouse[SnowflakeWarehouseType, SnowflakeS
                     for table in schema.filter_tables(table_names):
                         create_stmt = table.create_table_stmt()
                         if save_files:
-                            path = Path('sql') / str(table.schema_name)
+                            path = Path('sql') / str(table.schema.name)
                             path.mkdir(exist_ok=True)
-                            file = path / f'{table.table_name}.sql'
+                            file = path / f'{table.name}.sql'
                             with file.open('w', encoding='utf-8') as f:
                                 f.write(create_stmt)
                         drop_stmt, create_stmt = create_stmt.split(';')

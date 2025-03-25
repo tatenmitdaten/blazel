@@ -8,6 +8,7 @@ import pyodbc  # type: ignore
 from blazel.base import BaseWarehouse
 from blazel.base import Column
 from blazel.handler.database import BaseDatabase
+from blazel.tables import SnowflakeTable
 
 logger = logging.getLogger()
 
@@ -72,7 +73,7 @@ def _create_columns(description: tuple) -> dict[str, Column]:
         column = Column(
             name=name,
             dtype=dtype.lower(),
-            definition=f'"{mssql_column[0]}"'
+            description=f'"{mssql_column[0]}"'
         )
         columns[name] = column
     return columns
@@ -85,10 +86,11 @@ def inspect_tables(
 ) -> BaseWarehouse:
     warehouse = copy.deepcopy(warehouse)
     # noinspection PyArgumentList
+    table: SnowflakeTable
     with database.get_conn() as conn:
         with conn.cursor() as cursor:
             for table in warehouse.filter(schema_names=schema_names):
-                source_name = table.options.source_name
+                source_name = table.meta.source
                 logger.info(source_name)
                 cursor.execute(f"SELECT * FROM {source_name} WHERE 1=0")
                 table.columns = _create_columns(cursor.description)

@@ -26,8 +26,8 @@ def warehouse() -> SnowflakeWarehouse:
 
 
 def test_schedule(warehouse):
-    warehouse['schema0']['table0'].options.batch_key = 'id'
-    warehouse['schema0']['table0'].options.batches = 3
+    warehouse['schema0']['table0'].meta.batch_key = 'id'
+    warehouse['schema0']['table0'].meta.batches = 3
     schedule_task = ScheduleTask(
         database_name='sources',
         schema_names=['schema0'],

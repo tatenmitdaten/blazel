@@ -83,9 +83,13 @@ class EntraServiceHandler:
             return self.init_token_cache()
         token_cache = msal.SerializableTokenCache()
         token_cache.deserialize(secret['SecretString'])
-        token_entry = next(token_cache.search(token_cache.CredentialType.ACCESS_TOKEN))
-        expiration_date = datetime.datetime.fromtimestamp(int(token_entry.get('expires_on', 0))) + datetime.timedelta(days=90)
-        logger.info(f'Loaded token cache from secret {self.secret_id}. Expires: {expiration_date:}')
+        logger.info(f'Loaded token cache from secret {self.secret_id}')
+        try:
+            token_entry = next(token_cache.search(token_cache.CredentialType.ACCESS_TOKEN))
+            expiration_date = datetime.datetime.fromtimestamp(int(token_entry.get('expires_on', 0))) + datetime.timedelta(days=90)
+            logger.info(f'Token expires: {expiration_date}')
+        except StopIteration:
+            logger.info('No CredentialType.ACCESS_TOKEN token found.')
         return token_cache
 
     @property

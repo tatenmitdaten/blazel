@@ -4,7 +4,12 @@ from enum import Enum
 from functools import lru_cache
 from pathlib import Path
 
-import yaml
+from ruamel.yaml import YAML  # type: ignore
+
+yaml = YAML()
+yaml.indent(mapping=2, sequence=4, offset=2)
+yaml.preserve_quotes = True
+yaml.width = 4096
 
 logger = logging.getLogger()
 
@@ -51,7 +56,7 @@ def get_parameters(file: Path | None = None) -> dict:
     if not file.exists():
         raise FileNotFoundError(f'File "{file.absolute()}" not found. Cannot read parameters.')
     with file.open() as buffer:
-        config = yaml.safe_load(buffer)
+        config = yaml.load(buffer)
     env = Env.get().value
     params = config[env]['deploy']['parameters']
     overrides = params['parameter_overrides']
