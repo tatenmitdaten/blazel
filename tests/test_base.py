@@ -82,9 +82,9 @@ def test_warehouse_env(warehouse_dict):
     wh = BaseWarehouse.from_serialized({})
     try:
         Env.set('dev')
-        assert wh.database_name == 'sources_dev'
+        assert wh.name == 'sources_dev'
         Env.set('prod')
-        assert wh.database_name == 'sources'
+        assert wh.name == 'sources'
     finally:
         del os.environ['APP_ENV']
 

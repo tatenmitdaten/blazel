@@ -91,7 +91,7 @@ class TaskOptions(BaseOptions, Serializable):
 @dataclass
 class BaseTask(ABC, Serializable, Generic[ExtractLoadWarehouseType]):
     task_type: str = field(default="BaseTask", init=False)
-    task_id: str = field(default=uuid.uuid4().hex, init=False)
+    task_id: str = field(default_factory=lambda: uuid.uuid4().hex, init=False)
 
     @abstractmethod
     def __call__(self, warehouse: ExtractLoadWarehouseType, context: LambdaContext | None = None) -> dict | None:

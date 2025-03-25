@@ -139,9 +139,12 @@ class BaseTable(Generic[BaseSchemaType, BaseTableType]):
             del self.columns[column_name]
 
     @property
-    def database_name(self) -> str:
-        # noinspection PyTypeChecker
-        return self.schema.warehouse.database_name
+    def database_name(self):
+        return self.schema.warehouse.name
+
+    @property
+    def schema_name(self) -> str:
+        return self.schema.name
 
     @property
     def column_names(self) -> list[str]:
@@ -149,11 +152,7 @@ class BaseTable(Generic[BaseSchemaType, BaseTableType]):
 
     @property
     def table_uri(self) -> str:
-        return f'{self.database_name}.{self.schema.name}.{self.name}'
-
-    @property
-    def table_name(self) -> str:
-        return f'{self.schema.name}.{self.name}'
+        return f'{self.database_name}.{self.schema_name}.{self.name}'
 
     @property
     def dbt_format(self):
