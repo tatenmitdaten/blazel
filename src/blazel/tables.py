@@ -1,13 +1,20 @@
 import csv
 import datetime
 import gzip
+import itertools
+import json
 import logging
 import os
+import time
+from collections import defaultdict
+from contextlib import contextmanager
 from dataclasses import dataclass
 from dataclasses import field
+from decimal import Decimal
 from enum import Enum
 from io import BytesIO
 from io import StringIO
+from itertools import batched
 from pathlib import Path
 from typing import Any
 from typing import cast
@@ -17,7 +24,14 @@ from typing import NamedTuple
 from typing import TypeVar
 from zoneinfo import ZoneInfo
 
-import time
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import serialization
+from snowflake.connector import connect
+from snowflake.connector import DictCursor
+from snowflake.connector import SnowflakeConnection
+from snowflake.connector.cursor import SnowflakeCursor
+from snowflake.connector.errors import ProgrammingError
+
 from blazel.base import Column
 from blazel.clients import get_extract_time_table
 from blazel.clients import get_snowflake_secret
@@ -29,12 +43,6 @@ from blazel.tasks import ExtractLoadSchema
 from blazel.tasks import ExtractLoadTable
 from blazel.tasks import ExtractLoadWarehouse
 from blazel.tasks import TableTaskType
-from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives import serialization
-from itertools import batched
-from snowflake.connector import connect
-from snowflake.connector import SnowflakeConnection
-from snowflake.connector.errors import ProgrammingError
 
 logger = logging.getLogger()
 logging.getLogger('snowflake.connector').setLevel(logging.WARNING)
@@ -389,47 +397,87 @@ class SnowflakeTable(
         """
         Load data from Snowflake stage into target table.
         """
-        with get_snowflake_connection(self.database_name) as snowflake_conn:
-            logger.info(f'Connected to Snowflake account {snowflake_conn.account}.')
-            messages = []
-            with snowflake_conn.cursor() as snowflake_cursor:
-                for cmd_type, stmt in self.load_stmt().items():
-                    logger.info(stmt)
-                    snowflake_cursor.execute(stmt)
-                    results = [row for row in snowflake_cursor.fetchall()]
-                    if results:
-                        match cmd_type:
-                            case SQL.drop | SQL.create | SQL.truncate:
-                                logger.info(f'{cmd_type.value}: {results[0][0]}')
-                            case SQL.update | SQL.insert | SQL.delete:
-                                logger.info(f'{cmd_type.value}: {results[0][0]} rows affected.')
-                            case SQL.copy:
-                                for row in results:
-                                    if len(row) == 1:
-                                        msg = row[0]  # error message
-                                    else:
-                                        msg = 'file: {}, status: {}, parsed {}, loaded {}'.format(*row[:4])
-                                    messages.append(f'{cmd_type.value}: {msg}')
-                                logger.info('\n'.join(messages))
-                if self.meta.timestamp_field:
-                    snowflake_cursor.execute(f'SELECT MAX({self.meta.timestamp_field}) FROM {self.table_uri}')
-                    result: tuple = snowflake_cursor.fetchone()  # type: ignore
-                    self.set_latest_timestamp(result[0])
+        messages = []
+        with self.schema.warehouse.cursor() as cursor:
+            for cmd_type, stmt in self.load_stmt().items():
+                logger.info(stmt)
+                cursor.execute(stmt)
+                results = [row for row in cursor.fetchall()]
+                if results:
+                    match cmd_type:
+                        case SQL.drop | SQL.create | SQL.truncate:
+                            logger.info(f'{cmd_type.value}: {results[0][0]}')
+                        case SQL.update | SQL.insert | SQL.delete:
+                            logger.info(f'{cmd_type.value}: {results[0][0]} rows affected.')
+                        case SQL.copy:
+                            for row in results:
+                                if len(row) == 1:
+                                    msg = row[0]  # error message
+                                else:
+                                    msg = 'file: {}, status: {}, parsed {}, loaded {}'.format(*row[:4])
+                                messages.append(f'{cmd_type.value}: {msg}')
+                            logger.info('\n'.join(messages))
+            if self.meta.timestamp_field:
+                cursor.execute(f'SELECT MAX({self.meta.timestamp_field}) FROM {self.table_uri}')
+                result: tuple = cursor.fetchone()  # type: ignore
+                self.set_latest_timestamp(result[0])
         return {
             'message': messages
         }
 
     def update_timestamp_field(self, value: str | datetime.datetime | None = None):
+        """
+        Update the timestamp field in the extract_time_table.
+
+        Args:
+            value:
+
+        Returns:
+
+        """
         if isinstance(value, datetime.datetime):
             value = value.strftime(default_timestamp_format)
-        with get_snowflake_connection(self.database_name) as snowflake_conn:
-            with snowflake_conn.cursor() as snowflake_cursor:
-                if self.meta.timestamp_field:
-                    if value is None:
-                        snowflake_cursor.execute(f'SELECT MAX({self.meta.timestamp_field}) FROM {self.table_uri}')
-                        result: tuple = snowflake_cursor.fetchone()  # type: ignore
-                        value = result[0]
-                    self.set_latest_timestamp(value)
+        with self.schema.warehouse.cursor() as cursor:
+            if self.meta.timestamp_field:
+                if value is None:
+                    cursor.execute(f'SELECT MAX({self.meta.timestamp_field}) FROM {self.table_uri}')
+                    result: tuple = snowflake_cursor.fetchone()  # type: ignore
+                    value = result[0]
+                self.set_latest_timestamp(value)
+
+    def get_stats(self) -> str:
+        with self.schema.warehouse.cursor(DictCursor) as cursor:
+            n = cursor.execute(f'SELECT COUNT(*) AS "n" FROM {self.table_uri}').fetchone()['n']
+            result = {}
+            for batch in itertools.batched(self, n=20):
+                fields = []
+                column: Column
+                for column in batch:
+                    for metric, formula in {
+                        'min': 'MIN({})',
+                        'max': 'MAX({})',
+                        'count': 'COUNT({})',
+                        'count distinct': 'COUNT(DISTINCT {})'
+                    }.items():
+                        fields.append({
+                            'column': column.name.strip('"').lower(),
+                            'metric': metric,
+                            'formula': formula.format(column.name)
+                        })
+                fields_str = ','.join('{formula} AS "{column}|{metric}"'.format(**s) for s in fields)
+                cursor.execute(f'SELECT {fields_str} FROM {self.table_uri}')
+                result |= cursor.fetchone()
+        stats = defaultdict(dict)
+        for column_metric, value in result.items():
+            column, metric = column_metric.split('|')
+            stats[column][metric] = value
+        for item in stats.values():
+            if isinstance(item['min'], Decimal):
+                item['min'] = float(item['min'])
+                item['max'] = float(item['max'])
+            item['not null'] = item['count'] == n
+            item['unique'] = item['count distinct'] == n
+        return json.dumps(stats, indent=2, ensure_ascii=False, default=str)
 
 
 class SnowflakeTableUpsert(SnowflakeTable):
@@ -495,6 +543,13 @@ class SnowflakeWarehouse(
 ):
     schemas: dict[str, SnowflakeSchemaType] = field(default_factory=dict)
 
+    @contextmanager
+    def cursor(self, cursor_class: type[SnowflakeCursor] = SnowflakeCursor):
+        with get_snowflake_connection(self.name) as snowflake_conn:
+            logger.info(f'Connected to Snowflake account {snowflake_conn.account}.')
+            with snowflake_conn.cursor(cursor_class) as snowflake_cursor:
+                yield snowflake_cursor
+
     @staticmethod
     def table_class(table_serialized: dict[str, dict | None]) -> type[SnowflakeTableType]:
         options = table_serialized.get('meta') or {}
@@ -510,33 +565,32 @@ class SnowflakeWarehouse(
             overwrite: bool = False,
             save_files: bool = False
     ):
-        with get_snowflake_connection(self.name) as snowflake_conn:
-            with snowflake_conn.cursor() as snowflake_cursor:
-                schemas = self.filter_schemas(schema_names)
-                for schema in schemas:
-                    schema_uri = f'{self.name}.{schema.name}'
-                    if table_names is None and overwrite:
-                        logger.info(f'Dropped {schema_uri}.')
-                        snowflake_cursor.execute(f'DROP SCHEMA IF EXISTS {schema_uri} CASCADE')
-                        overwrite = False
-                    snowflake_cursor.execute(f'CREATE SCHEMA IF NOT EXISTS {schema_uri}')
-                    for table in schema.filter_tables(table_names):
-                        create_stmt = table.create_table_stmt()
-                        if save_files:
-                            path = Path('sql') / str(table.schema.name)
-                            path.mkdir(exist_ok=True)
-                            file = path / f'{table.name}.sql'
-                            with file.open('w', encoding='utf-8') as f:
-                                f.write(create_stmt)
-                        drop_stmt, create_stmt = create_stmt.split(';')
-                        if overwrite:
-                            snowflake_cursor.execute(drop_stmt)
-                            logger.info(f'Dropped {table.table_uri}.')
-                        try:
-                            snowflake_cursor.execute(create_stmt)
-                            logger.info(f'Created {table.table_uri}.')
-                        except ProgrammingError as e:
-                            if e.errno == 2002:
-                                logger.info(f'Table {table.table_uri} exists. Skipping.')
-                            else:
-                                raise
+        with self.cursor() as cursor:
+            schemas = self.filter_schemas(schema_names)
+            for schema in schemas:
+                schema_uri = f'{self.name}.{schema.name}'
+                if table_names is None and overwrite:
+                    logger.info(f'Dropped {schema_uri}.')
+                    cursor.execute(f'DROP SCHEMA IF EXISTS {schema_uri} CASCADE')
+                    overwrite = False
+                cursor.execute(f'CREATE SCHEMA IF NOT EXISTS {schema_uri}')
+                for table in schema.filter_tables(table_names):
+                    create_stmt = table.create_table_stmt()
+                    if save_files:
+                        path = Path('sql') / str(table.schema.name)
+                        path.mkdir(exist_ok=True)
+                        file = path / f'{table.name}.sql'
+                        with file.open('w', encoding='utf-8') as f:
+                            f.write(create_stmt)
+                    drop_stmt, create_stmt = create_stmt.split(';')
+                    if overwrite:
+                        cursor.execute(drop_stmt)
+                        logger.info(f'Dropped {table.table_uri}.')
+                    try:
+                        cursor.execute(create_stmt)
+                        logger.info(f'Created {table.table_uri}.')
+                    except ProgrammingError as e:
+                        if e.errno == 2002:
+                            logger.info(f'Table {table.table_uri} exists. Skipping.')
+                        else:
+                            raise

@@ -14,7 +14,7 @@ from blazel.tasks import TimeRange
 
 
 @pytest.fixture
-def warehouse() -> SnowflakeWarehouse:
+def warehouse() -> Geenrator[SnowflakeWarehouse, None, None]:
     warehouse = SnowflakeWarehouse.from_serialized({
         'schema0': {
             'table0': {

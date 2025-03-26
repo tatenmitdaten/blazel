@@ -314,7 +314,7 @@ def get_transform_payload(transform: list[str] | tuple[str, ...], env: Env) -> l
     return dbt
 
 
-steps = [
+step_choices = [
     ''.join(t)
     for r in range(1, 5)
     for t in itertools.combinations(['el', 't', 'r', 'p'], r)
@@ -329,7 +329,7 @@ def cli_pipeline(
         end: Annotated[str | None, Option(help="end date or datetime")] = None,
         steps: Annotated[str, Option(
             '--steps',
-            click_type=click.Choice(choices=steps),
+            click_type=click.Choice(choices=step_choices),
             help="steps to run",
         )
         ] = 'eltr',
@@ -476,6 +476,19 @@ def cli_dbt(
         file: str,
 ):
     Warehouse().to_dbt_format(file)
+
+
+@cli.command(name='stats')
+def cli_stats(
+        schema_names: schema_names_ann = None,
+        table_names: table_names_ann = None,
+        table_prefix: table_prefix_ann = None,
+        table_prefix_filter: table_prefix_filter_ann = 'match',
+        env: env_ann = Env.dev,
+):
+    Env.set(env)
+    for table in get_filtered_tables(schema_names, table_names, table_prefix, table_prefix_filter):
+        rich.print(table.get_stats())
 
 
 if __name__ == '__main__':

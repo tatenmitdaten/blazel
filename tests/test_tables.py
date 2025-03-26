@@ -1,5 +1,6 @@
 import gzip
 import logging
+from typing import Generator
 
 import boto3
 import pytest
@@ -14,7 +15,7 @@ from blazel.tasks import ExtractLoadJob
 
 
 @pytest.fixture(scope='session')
-def schema() -> SnowflakeSchema:
+def schema() -> Generator[SnowflakeSchema, None, None]:
     columns = {
         'column0': 'varchar',
         'column1': 'datetime',
@@ -97,7 +98,7 @@ CREATE TABLE sources_dev.schema0.table0 (
 
 
 @pytest.fixture(scope='session')
-def snowflake_bucket(mocked_aws, parameters) -> Bucket:
+def snowflake_bucket(mocked_aws, parameters) -> Generator[Bucket, None, None]:
     s3 = boto3.client('s3', region_name='eu-central-1')
     bucket_stem = parameters['SnowflakeStagingBucketStem']
     bucket_name = f'{bucket_stem}-dev'

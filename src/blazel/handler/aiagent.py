@@ -1,12 +1,11 @@
 import abc
 import json
+from functools import lru_cache
 
 import boto3
-import google.genai  # type: ignore
-import mistralai
+
 from botocore.client import BaseClient
 from botocore.config import Config
-from google.genai import types
 
 
 def aws_session() -> boto3.Session:
@@ -97,18 +96,21 @@ class Gemini(ChatModel):
     model_id = 'gemini-2.0-flash'
 
     @property
-    def client(self) -> google.genai.Client:
+    @lru_cache
+    def client(self):
+        from google.genai import Client
         response = aws_session().client('ssm').get_parameter(
             Name='/google/genai-api-key',
             WithDecryption=True
         )
         api_key = response['Parameter']['Value']
-        return google.genai.Client(api_key=api_key)
+        return Client(api_key=api_key)
 
     def list_models(self) -> list[str]:
         return sorted(m.name for m in self.client.models.list())
 
     def invoke(self, text: str, max_tokens: int = 5000, system_prompt: str | None = None) -> str:
+        from google.genai import types
         response = self.client.models.generate_content(
             model=self.model_id,
             contents=text,
@@ -125,7 +127,9 @@ class Mistral(ChatModel):
     model_id = "mistral-large-latest"
 
     @property
-    def client(self) -> mistralai.Mistral:
+    @lru_cache
+    def client(self):
+        import mistralai
         response = aws_session().client('ssm').get_parameter(
             Name='/mistral/blazel-api-key',
             WithDecryption=True

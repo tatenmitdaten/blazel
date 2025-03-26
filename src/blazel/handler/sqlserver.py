@@ -2,6 +2,7 @@ import copy
 import logging
 import re
 from contextlib import contextmanager
+from typing import Generator
 
 import pyodbc  # type: ignore
 
@@ -17,7 +18,7 @@ class SQLServerDatabase(BaseDatabase['SQLServerDatabase']):
     odbc_driver_path = '/opt/microsoft/msodbcsql17/lib64/libmsodbcsql-17.10.so.6.1'
 
     @contextmanager
-    def get_conn(self, login_timeout: int = 5, conn_timeout: int = 240) -> pyodbc.Connection:
+    def get_conn(self, login_timeout: int = 5, conn_timeout: int = 240) -> Generator[pyodbc.Connection, None, None]:
         conn_string = f'driver={self.odbc_driver_path};uid={self.username};pwd={self.password};database={self.dbname}'
         timeouts = f'[login timeout: {login_timeout}s, conn timeout: {conn_timeout}s]'
         if self.use_tunnel:
