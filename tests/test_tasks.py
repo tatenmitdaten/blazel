@@ -1,4 +1,5 @@
 import datetime
+from typing import Generator
 
 import boto3
 import pytest
@@ -14,7 +15,7 @@ from blazel.tasks import TimeRange
 
 
 @pytest.fixture
-def warehouse() -> Geenrator[SnowflakeWarehouse, None, None]:
+def warehouse() -> Generator[SnowflakeWarehouse, None, None]:
     warehouse = SnowflakeWarehouse.from_serialized({
         'schema0': {
             'table0': {
