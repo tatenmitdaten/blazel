@@ -48,10 +48,6 @@ class SQLServerTable(NamedTuple):
     def table_uri(self):
         return f'{self.schema_name}.{self.table_name}'
 
-    @property
-    def stage_file_name(self):
-        return f'{self.schema_name}.{self.table_name}.csv.gz'
-
     def warehouse_name(self, keep_db_schema: bool):
         warehouse_table_name = get_snake_case(self.table_name)
         return f'{self.schema_name.lower()}_{warehouse_table_name}' if keep_db_schema else warehouse_table_name
@@ -61,7 +57,7 @@ class SQLServerTable(NamedTuple):
             schema=schema,
             name=self.warehouse_name(keep_db_schema),
             meta=TableMeta(
-                stage_file_name=self.stage_file_name,
+                source=self.table_uri,
                 stage_file_format='sqlserver_export',
             )
         )
@@ -106,13 +102,17 @@ class SQLServerColumn(NamedTuple):
     def map_type(dtype: str) -> str:
         dtype_map = {
             'bit': 'int',
+            'tinyint': 'int',
+            'smallint': 'int',
             'char': 'varchar',
             'money': 'decimal(19,4)',
             'decimal': 'decimal(28,10)',
-            'uniqueidentifier': 'varchar',
             'datetime2': 'datetime',
             'smalldatetime': 'datetime',
             'xml': 'variant',
+            'uniqueidentifier': 'varchar',
+            'varbinary': 'varchar',
+            'binary': 'varchar',
         }
         return dtype_map.get(dtype, dtype)
 

@@ -220,9 +220,10 @@ class SnowflakeTable(
             'message': f'Deleted {counter} file(s) from {path}'
         }
 
-    def get_key(self, batch: int | str, file_number: int, suffix: str = 'csv.gz') -> str:
+    def get_key(self, batch: int | str, file: int | str, suffix: str = 'csv.gz') -> str:
         batch = f'b{batch:02d}' if isinstance(batch, int) else batch
-        file_name = f'{self.name}_{batch}_f{file_number:02d}.{suffix}'
+        file = f'f{file:02d}' if isinstance(file, int) else file
+        file_name = f'{self.name}_{batch}_{file}.{suffix}'
         return f'{self.schema.name}/{self.name}/{file_name}'
 
     @staticmethod
@@ -246,11 +247,11 @@ class SnowflakeTable(
 
     def download_from_stage(
             self,
-            batch_number: int = 0,
-            file_number: int = 0
+            batch: int | str = 0,
+            file: int | str = 0
     ) -> str:
         bucket = get_snowflake_staging_bucket()
-        key = self.get_key(batch_number, file_number)
+        key = self.get_key(batch, file)
         obj = bucket.Object(key)
         logger.info(f'Downloading s3://{bucket.name}/{key}')
         csv_str = gzip.decompress(obj.get()['Body'].read()).decode()
@@ -422,7 +423,7 @@ class SnowflakeTable(
                 result: tuple = cursor.fetchone()  # type: ignore
                 self.set_latest_timestamp(result[0])
         return {
-            'message': messages
+            'message': messages if len(messages) <= 3 else f'Loaded {len(messages)} files into {self.table_uri}.'
         }
 
     def update_timestamp_field(self, value: str | datetime.datetime | None = None):
@@ -445,7 +446,14 @@ class SnowflakeTable(
                     value = result[0]
                 self.set_latest_timestamp(value)
 
-    def get_stats(self) -> str:
+    def get_stats(self, no_cache=False) -> dict:
+        file = Path(f'data/.cache/{self.schema.name}/{self.name}.json')
+        if file.exists() and not no_cache:
+            logger.info(f'Loading stats from {file}')
+            stats = json.load(file.open())
+            return stats
+
+        logger.info(f'Loading stats from {self.table_uri} ({len(self.columns)} columns)...')
         with self.schema.warehouse.cursor(DictCursor) as cursor:
             n = cursor.execute(f'SELECT COUNT(*) AS "n" FROM {self.table_uri}').fetchone()['n']
             result = {}
@@ -454,18 +462,21 @@ class SnowflakeTable(
                 column: Column
                 for column in batch:
                     for metric, formula in {
-                        'min': 'MIN({})',
-                        'max': 'MAX({})',
-                        'count': 'COUNT({})',
-                        'count distinct': 'COUNT(DISTINCT {})'
+                        'min': 'MIN({column})',
+                        'max': 'MAX({column})',
+                        'count': 'COUNT({column})',
+                        'count distinct': 'COUNT(DISTINCT {column})',
+                        'sample': '(SELECT ARRAY_AGG({column}) FROM (SELECT DISTINCT {column} FROM ' + self.table_uri + ' SAMPLE (10 ROWS)))'
                     }.items():
                         fields.append({
-                            'column': column.name.strip('"').lower(),
+                            'column': column.name.strip('"'),
                             'metric': metric,
-                            'formula': formula.format(column.name)
+                            'formula': formula.format(column=column.name)
                         })
                 fields_str = ','.join('{formula} AS "{column}|{metric}"'.format(**s) for s in fields)
-                cursor.execute(f'SELECT {fields_str} FROM {self.table_uri}')
+                select = f'SELECT {fields_str} FROM {self.table_uri}'
+                logger.debug(select)
+                cursor.execute(select)
                 result |= cursor.fetchone()
         stats = defaultdict(dict)
         for column_metric, value in result.items():
@@ -477,7 +488,60 @@ class SnowflakeTable(
                 item['max'] = float(item['max'])
             item['not null'] = item['count'] == n
             item['unique'] = item['count distinct'] == n
-        return json.dumps(stats, indent=2, ensure_ascii=False, default=str)
+            item['sample'] = json.loads(item['sample'])
+        file.parent.mkdir(parents=True, exist_ok=True)
+        json_str = json.dumps(stats, indent=2, ensure_ascii=False, default=str)
+        file.write_text(json_str)
+        return stats
+
+    def get_auto_doc(self) -> str:
+        from blazel.handler.aiagent import Claude
+        args = {
+            'table_name': self.name,
+            'description': self.description,
+            'primary_key': self.meta.primary_key,
+        }
+        stats = self.get_stats()
+        for column in self:
+            name = column.name.strip('"')
+            stats[name]['data_type'] = column.dtype
+            if column.description:
+                stats[name]['description'] = column.description
+        args['columns'] = stats
+        example = """\
+        {
+          "description": "<table description>"
+          "columns": {
+              "<column name>": "<column description>"
+          }
+        }
+        """.replace(INDENT, '')
+        prompt = f"""\
+        You create structured documentation for our data warehouse. 
+        You analyze tables in the schema `{self.schema.name}`. For context on the schema:
+        {self.schema.description}
+         
+        You analyze the table `{self.name}` and its {len(self.columns)} columns using the information and statistics from the following JSON:
+        
+        ```
+        {json.dumps(stats, indent=2, ensure_ascii=False, default=str)}
+        ```
+        
+        Understand or guess the purpose of each single columns.
+        Write a short description for each column and the entire table.
+        Return your answer in JSON following this structure:
+        ```
+        {example}
+        ```
+        Only return the valid JSON. No introduction. No explanation.        
+        """.replace(INDENT, '')
+        logger.debug(prompt)
+        model = Claude()
+        logger.info(f'Calling {model.model_id}...')
+        answer = model.invoke(prompt)
+        print(answer)
+        result = json.loads(answer)
+        return result
 
 
 class SnowflakeTableUpsert(SnowflakeTable):

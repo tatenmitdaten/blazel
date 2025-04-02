@@ -1,5 +1,7 @@
 import csv
 import io
+from pathlib import Path
+
 import itertools
 import json
 import logging
@@ -196,7 +198,7 @@ def cli_schedule(
         options=TaskOptions(start=start, end=end)
     )
     schedule = task(Warehouse())
-    rich.print(schedule)
+    print(json.dumps(schedule, indent=2, ensure_ascii=False))
 
 
 def start_statemachine(name: str, payload: str | None = None):
@@ -369,10 +371,10 @@ def cli_pipeline(
 
 @cli.command(name='file')
 def cli_file(
-        schema_name: Annotated[str, Option('--schema', help="schema")],
-        table_name: Annotated[str, Option('--table', help="table")],
-        batch_number: Annotated[int, Option('-b', '--batch', help="batch number")] = 0,
-        file_number: Annotated[int, Option('-f', '--file', help="file number")] = 0,
+        schema_names: schema_names_ann,
+        table_names: table_names_ann,
+        batch: Annotated[str, Option('-b', '--batch', help="batch name or number")] = 0,
+        file: Annotated[str, Option('-f', '--file', help="file name or number")] = 0,
         line: Annotated[int, Option('-l', '--line', help="line number")] = 1,
         n: Annotated[int, Option('-n', '--n', help="number of lines to display")] = 10,
         env: env_ann = Env.dev,
@@ -393,8 +395,12 @@ def cli_file(
     Download and display file from Snowflake stage
     """
     Env.set(env)
-    table: SnowflakeTable = Warehouse()[schema_name][table_name]
-    csv_str = table.download_from_stage(batch_number, file_number)
+    if batch.isdigit():
+        batch = int(batch)
+    if file.isdigit():
+        file = int(file)
+    table: SnowflakeTable = Warehouse()[schema_names[0]][table_names[0]]
+    csv_str = table.download_from_stage(batch, file)
     delimiter = delimiter.encode().decode('unicode_escape')
     lineterminator = lineterminator.encode().decode('unicode_escape')
 
@@ -473,9 +479,18 @@ def cli_tables(
 
 @cli.command(name='dbt')
 def cli_dbt(
-        file: str,
+        outfile: Annotated[str | None, Option(help="output file")] = None,
+        overwrite: Annotated[bool, Option(help="overwrite existing file")] = False,
 ):
+    if outfile is None:
+        outfile = '../model/models/auto.yml'
+    file = Path(outfile).resolve().absolute()
+    if file.exists() and not overwrite:
+        print(f'File {file} exists. Use --overwrite to overwrite.')
+        return
+    file.parent.mkdir(exist_ok=True, parents=True)
     Warehouse().to_dbt_format(file)
+    print(f'Wrote dbt sources to {file}')
 
 
 @cli.command(name='stats')
@@ -489,6 +504,33 @@ def cli_stats(
     Env.set(env)
     for table in get_filtered_tables(schema_names, table_names, table_prefix, table_prefix_filter):
         rich.print(table.get_stats())
+
+
+@cli.command(name='autodoc')
+def cli_autodoc(
+        schema_names: schema_names_ann = None,
+        table_names: table_names_ann = None,
+        table_prefix: table_prefix_ann = None,
+        table_prefix_filter: table_prefix_filter_ann = 'match',
+        env: env_ann = Env.dev,
+):
+    Env.set(env)
+    for table in get_filtered_tables(schema_names, table_names, table_prefix, table_prefix_filter):
+        auto_docs = table.get_auto_doc()
+        table.description = auto_docs.get('description', table.description)
+        for column_name, description in auto_docs.get('columns', {}).items():
+            if column_name in table.columns:
+                table.columns[column_name].description = description
+            elif f'"{column_name}"' in table.columns:
+                table.columns[f'"{column_name}"'].description = description
+            else:
+                print(f'Column {column_name} not found in table {table.name}')
+        Warehouse().to_yaml_file()
+
+
+@cli.command(name='reload')
+def cli_reload():
+    Warehouse().to_yaml_file()
 
 
 if __name__ == '__main__':

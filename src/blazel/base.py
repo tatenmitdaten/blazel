@@ -23,6 +23,10 @@ BaseSchemaType = TypeVar('BaseSchemaType', bound='BaseSchema')
 BaseWarehouseType = TypeVar('BaseWarehouseType', bound='BaseWarehouse')
 
 
+def create_dict(**kwargs):
+    return {key: value for key, value in kwargs.items() if value}
+
+
 @dataclass
 class Column:
     name: str
@@ -109,7 +113,7 @@ class TableMeta(BaseOptions):
     location: str | None = None
     truncate: bool | None = None
     spreadsheet_id: str | None = None
-    stage_file_name: str | None = None
+    stage_file_name: str | None = None  # TODO: remove
     stage_file_format: str | None = None
 
 
@@ -168,14 +172,11 @@ class BaseTable(Generic[BaseSchemaType, BaseTableType]):
 
     @property
     def serialized(self) -> dict:
-        table: dict[str, str | dict] = {
-            'columns': {column.name: column.serialized for column in self}
-        }
-        if self.description:
-            table['description'] = self.description
-        if self.meta.as_dict:
-            table['meta'] = self.meta.as_dict
-        return table
+        return create_dict(
+            _description=self.description,
+            _meta=self.meta.as_dict,
+            **{column.name: column.serialized for column in self}
+        )
 
     @classmethod
     def from_serialized(
@@ -184,13 +185,17 @@ class BaseTable(Generic[BaseSchemaType, BaseTableType]):
             table_name: str,
             table_serialized: dict[str, dict[str, Any] | str],
     ) -> BaseTableType:
+        meta = table_serialized.get('meta') or table_serialized.get('_meta') or {}
         table = cls(
             schema=schema,
             name=table_name,
-            description=cast(str | None, table_serialized.get('description')),
-            meta=TableMeta(**cast(dict, table_serialized.get('meta', {})))
+            description=cast(str | None, table_serialized.get('_description')),
+            meta=TableMeta(**cast(dict, meta))
         )
-        columns_serialized = cast(dict[str, Any], table_serialized.get('columns', {}))
+        if 'columns' in table_serialized:
+            columns_serialized = cast(dict[str, Any], table_serialized['columns'])
+        else:
+            columns_serialized = {k: v for k, v in table_serialized.items() if k not in ('_description', '_meta')}
         for column_name, column_serialized in columns_serialized.items():
             table.columns[column_name] = Column.from_serialized(
                 column_name,
@@ -251,6 +256,7 @@ class BaseSchema(Generic[BaseWarehouseType, BaseSchemaType, BaseTableType]):
     def dbt_format(self) -> dict:
         schema: dict[str, str | dict | list] = {
             'name': self.name,
+            'database': self.warehouse.default_database_name_prod,
             'tables': [table.dbt_format for table in self],
         }
         if self.description:
@@ -261,7 +267,14 @@ class BaseSchema(Generic[BaseWarehouseType, BaseSchemaType, BaseTableType]):
 
     @property
     def serialized(self) -> dict:
-        return {table.name: table.serialized for table in self}
+        schema = {}
+        if self.description:
+            schema['_description'] = self.description
+        if self.meta:
+            schema['_meta'] = self.meta
+        for table in self:
+            schema[table.name] = table.serialized
+        return schema
 
     @classmethod
     def from_serialized(
@@ -272,6 +285,12 @@ class BaseSchema(Generic[BaseWarehouseType, BaseSchemaType, BaseTableType]):
     ) -> BaseSchemaType:
         schema = cls(warehouse=warehouse, name=schema_name)
         for table_name, table_serialized in schema_serialized.items():
+            if table_name == '_description':
+                schema.description = table_serialized
+                continue
+            if table_name == '_meta':
+                schema.description = table_serialized
+                continue
             table_class: type[BaseTableType] = warehouse.table_class(table_serialized)
             schema.tables[table_name] = table_class.from_serialized(
                 schema,
@@ -286,6 +305,7 @@ class BaseWarehouse(Generic[BaseWarehouseType, BaseSchemaType, BaseTableType]):
     default_database_name_prod: ClassVar[str] = 'sources'
     default_database_name_dev: ClassVar[str] = 'sources_dev'
     schemas: dict[str, BaseSchemaType] = field(default_factory=dict[str, BaseSchemaType])
+    source_file: Path | None = None
 
     def __str__(self):
         return f'{self.__class__.__name__}({self.name=},schemas={len(self.schemas)})'
@@ -401,7 +421,9 @@ class BaseWarehouse(Generic[BaseWarehouseType, BaseSchemaType, BaseTableType]):
     def from_yaml_file(cls: type[BaseWarehouseType], file: Path | str | None = None) -> BaseWarehouseType:
         file = cls.get_yaml_file_path(file)
         yaml_str = file.read_text()
-        return cls.from_yaml(yaml_str)
+        warehouse = cls.from_yaml(yaml_str)
+        warehouse.source_file = file
+        return warehouse
 
     @classmethod
     def from_yaml(cls: type[BaseWarehouseType], yaml_str: str) -> BaseWarehouseType:
@@ -417,12 +439,14 @@ class BaseWarehouse(Generic[BaseWarehouseType, BaseSchemaType, BaseTableType]):
         if isinstance(file, str):
             file = Path(file)
         if file is None:
-            file = self.get_yaml_file_path()
+            file = Path(self.source_file)
         with file.open('w') as f:
             f.write(self.as_yaml)
 
     def to_dbt_format(self, file: Path | str):
         if isinstance(file, str):
             file = Path(file)
-        with file.open('w') as f:
-            yaml.dump(self.dbt_format, f)
+        f = io.StringIO()
+        yaml.dump(self.dbt_format, f)
+        yaml_str = f"# This file was autogenerated by `loader dbt`.\n\n{f.getvalue()}"
+        file.write_text(yaml_str)
