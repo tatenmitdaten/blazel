@@ -93,7 +93,7 @@ class SQLServerColumn(NamedTuple):
     @property
     def warehouse_name(self):
         warehouse_name = get_snake_case(self.column_name)
-        if warehouse_name in ('column', 'order', 'start', 'end'):
+        if warehouse_name in ('column', 'order', 'start', 'end', 'from', 'to'):
             warehouse_name += '_'
         warehouse_name = warehouse_name.replace('__', '_')
         return warehouse_name
